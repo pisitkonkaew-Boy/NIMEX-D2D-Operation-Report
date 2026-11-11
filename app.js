@@ -281,6 +281,11 @@ function parseWorkbookToRecords(wb){
         if(v!==null && v!==undefined && String(v).trim()!=='') merged[c] = v;
       });
     });
+    // KPI2: remember the first appointment and whether any attempt had a customer reason
+    let firstK = null;
+    items.forEach(it=>{ const d = parseThaiDate(it.row[COL.confirmDate]); if(d && (!firstK || toISODate(d) < toISODate(firstK))) firstK = d; });
+    merged.__firstK = firstK;
+    merged.__custDelay = items.some(it=> /^\s*01000/.test(String(it.row[COL.pickupFailReasonMain]||'')));
     mergedRows.push(merged);
   });
 
@@ -310,7 +315,9 @@ function parseWorkbookToRecords(wb){
     const failReasonGroup = pickupResult==='fail' ? classifyFailReason(row[COL.pickupFailReasonMain]) : null;
     const failReasonDetail = pickupResult==='fail' ? detailedReasonText(row[COL.pickupFailReasonMain]) : null;
 
-    const onTime = !!(actualDate && dateOnly(actualDate)===dateOnly(confirmDate));
+    const firstK = row.__firstK || confirmDate;
+    const onTime = !!(actualDate && (toISODate(actualDate) === toISODate(firstK)
+      || (row.__custDelay && toISODate(actualDate) > toISODate(firstK)))); // KPI2: first appointment; customer-caused delay = on time
     const driverName = (row[COL.driverName]||'').toString().trim() || null;
     const vehiclePlate = (row[COL.vehiclePlate]||'').toString().trim() || null;
     const route = (row[COL.route]||'').toString().trim() || null;
@@ -3123,6 +3130,8 @@ function dataAnomalies(){
   const dcs = new Map(); RECORDS.forEach(r=>{ if(!r.createDateISO) return; const o = dcs.get(r.dcCode) || dcs.set(r.dcCode, { n:0, c:0, name:r.dcName, zone:r.zone }).get(r.dcCode); o.n++; if(cxStage(r)) o.c++; });
   const hi = [...dcs.values()].filter(o=> o.n >= 20 && o.c/o.n >= 0.9);
   if(hi.length) out.push(['DC ที่บิลยกเลิกเกือบทั้งหมด (≥90%)', hi.map(o=> `${o.name} (${o.zone}) ${fmtNum(o.c)}/${fmtNum(o.n)}`).join(', '), 'ตรวจว่ายังเปิดรับงานอยู่หรือไม่ · ตัดออกได้ที่ "DC ที่ไม่นำมาคำนวณ"']);
+  const lateOnly = RECORDS.filter(r=> (!REPORT_END_DATE || r.confirmDateISO <= REPORT_END_DATE) && recordKpiFlags(r).failBucket==='lateOnly').length;
+  if(lateOnly) out.push(['รับสำเร็จแต่ไม่ตรงวันนัดแรก', fmtNum(lateOnly)+' บิล', 'นับเป็นไม่ตรงวันนัดใน KPI2 (เลื่อนนัดโดยไม่มีสาเหตุลูกค้า) · การเลื่อนเพราะลูกค้าถือว่าตรงวันนัด']);
   const pend = RECORDS.filter(r=> (!REPORT_END_DATE || r.confirmDateISO <= REPORT_END_DATE) && recordKpiFlags(r).failBucket==='pending').length;
   if(pend) out.push(['บิลที่ยังไม่มีผลเข้ารับ (รอผล)', fmtNum(pend)+' บิล', 'นับเป็นไม่สำเร็จใน KPI2/KPI3 ตามสูตรเดิม จนกว่าจะอัปโหลดไฟล์ที่มีผล']);
   return out;
