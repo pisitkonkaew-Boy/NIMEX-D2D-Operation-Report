@@ -1,0 +1,128 @@
+/** NIMEX D2D Operation Report — data API (Google Apps Script, bound to the Google Sheet that holds the data).
+ *  Setup: Extensions › Apps Script › paste this file › Project Settings › Script Properties › add ADMIN_KEY = <your admin password>
+ *         Deploy › New deployment › Web app › Execute as: Me · Who has access: Anyone › copy the /exec URL into config.js
+ *  The admin password is never stored in this file or in the web page.
+ *  Tabs are created automatically: Rows (one bill per row, all text), Settings (key | json), Log.
+ *  GET  -> { ok, cols, rows, settings, meta, n }   (public, cached as gzip+base64 chunks of 90 KB)
+ *  POST (text/plain JSON, needs key = ADMIN_KEY):
+ *     auth                        check the key
+ *     begin   {days, cols}        delete every row whose creation day is in `days` (a re-upload replaces those days)
+ *     append  {rows}              add up to ~1,500 rows per call (stored as text)
+ *     finish  {meta}              save upload facts + rebuild the cache
+ *     settings{settings}          merge the shared dashboard settings                                       */
+var TAB = { rows:'Rows', settings:'Settings', log:'Log' };
+var CK = 'd2d-data';
+
+function ss_(){ return SpreadsheetApp.getActiveSpreadsheet(); }
+function sheet_(k){
+  var s = ss_(), t = s.getSheetByName(TAB[k]);
+  if(!t){
+    t = s.insertSheet(TAB[k]);
+    if(k === 'settings'){ t.getRange(1,1,1,2).setValues([['key','json']]).setFontWeight('bold'); t.setFrozenRows(1); }
+    if(k === 'log'){ t.getRange(1,1,1,3).setValues([['time','action','detail']]).setFontWeight('bold'); t.setFrozenRows(1); }
+  }
+  return t;
+}
+function header_(){
+  var t = sheet_('rows'), c = t.getLastColumn();
+  if(t.getLastRow() < 1 || c < 1) return [];
+  return t.getRange(1,1,1,c).getValues()[0].map(String);
+}
+function readRows_(){
+  var t = sheet_('rows'), n = t.getLastRow(), c = t.getLastColumn();
+  if(n < 2 || c < 1) return [];
+  return t.getRange(2,1,n-1,c).getValues();
+}
+function text_(v){ return v === null || v === undefined ? '' : String(v); }
+function getSetting_(key){
+  var t = sheet_('settings'), n = t.getLastRow(); if(n < 2) return null;
+  var v = t.getRange(2,1,n-1,2).getValues();
+  for(var i = 0; i < v.length; i++) if(String(v[i][0]) === key){ try{ return JSON.parse(v[i][1]); }catch(e){ return null; } }
+  return null;
+}
+function setSetting_(key, obj){
+  var t = sheet_('settings'), n = t.getLastRow(), json = JSON.stringify(obj);
+  if(n >= 2){ var v = t.getRange(2,1,n-1,1).getValues(); for(var i = 0; i < v.length; i++) if(String(v[i][0]) === key){ t.getRange(i+2,2).setNumberFormat('@').setValue(json); return; } }
+  t.getRange(n+1,1,1,2).setNumberFormat('@').setValues([[key, json]]);
+}
+function publicData_(){
+  var cols = header_(), rows = readRows_().map(function(r){ return r.map(text_); });
+  return { ok:true, cols:cols, rows:rows, settings:getSetting_('settings') || {}, meta:getSetting_('meta') || {}, n:rows.length };
+}
+function json_(o){ return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function log_(a, d){ sheet_('log').appendRow([new Date(), a, d]); }
+
+/* cache: the public JSON, gzip + base64, split into 90 KB pieces (CacheService values must stay under 100 KB) */
+function cacheGet_(){
+  var c = CacheService.getScriptCache(), n = c.get(CK + '-n'); if(!n) return null;
+  var keys = []; for(var i = 0; i < +n; i++) keys.push(CK + '-' + i);
+  var all = c.getAll(keys), b = '';
+  for(i = 0; i < keys.length; i++){ if(!all[keys[i]]) return null; b += all[keys[i]]; }
+  return Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(b), 'application/x-gzip')).getDataAsString('UTF-8');
+}
+function cachePut_(s){
+  var b = Utilities.base64Encode(Utilities.gzip(Utilities.newBlob(s, 'text/plain')).getBytes()), o = {}, n = 0;
+  for(var i = 0; i < b.length; i += 90000) o[CK + '-' + (n++)] = b.substr(i, 90000);
+  if(n <= 90){ o[CK + '-n'] = String(n); CacheService.getScriptCache().putAll(o, 21600); }
+}
+function cacheClear_(){ CacheService.getScriptCache().remove(CK + '-n'); }
+function warm_(){ try{ cachePut_(JSON.stringify(publicData_())); }catch(e){} }
+
+function doGet(){
+  var s = null; try{ s = cacheGet_(); }catch(e){}
+  if(!s){ s = JSON.stringify(publicData_()); try{ cachePut_(s); }catch(e){} }
+  return ContentService.createTextOutput(s).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e){
+  var b; try{ b = JSON.parse(e.postData.contents); }catch(x){ return json_({ ok:false, error:'bad_request' }); }
+  var key = PropertiesService.getScriptProperties().getProperty('ADMIN_KEY');
+  if(!key || !b.key || b.key !== key){ Utilities.sleep(1200); return json_({ ok:false, error:'denied' }); }
+  if(b.a === 'auth') return json_({ ok:true });
+  var lock = LockService.getScriptLock(); if(!lock.tryLock(25000)) return json_({ ok:false, error:'busy' });
+  try{
+    var t = sheet_('rows');
+    if(b.a === 'begin'){
+      var cols = (b.cols || []).map(String), head = header_();
+      if(!cols.length) return json_({ ok:false, error:'no_cols' });
+      if(!head.length){ t.getRange(1,1,1,cols.length).setNumberFormat('@').setValues([cols]).setFontWeight('bold'); t.setFrozenRows(1); head = cols; }
+      if(head.join('|') !== cols.join('|')) return json_({ ok:false, error:'cols_mismatch' });
+      var set = {}; (b.days || []).forEach(function(d){ set[String(d)] = 1; });
+      var ci = head.indexOf('createDateISO'), ki = head.indexOf('confirmDateISO'), old = readRows_(), keep = [];
+      for(var i = 0; i < old.length; i++){ var r = old[i], day = text_(r[ci]) || ('K:' + text_(r[ki])); if(!set[day]) keep.push(r.map(text_)); }
+      var removed = old.length - keep.length;
+      if(removed){
+        var w = head.length;
+        if(old.length) t.getRange(2,1,old.length,w).clearContent();
+        if(keep.length) t.getRange(2,1,keep.length,w).setNumberFormat('@').setValues(keep);
+      }
+      log_('begin', (b.days || []).length + ' days, removed ' + removed + ' rows');
+      cacheClear_();
+      return json_({ ok:true, removed:removed, kept:keep.length });
+    }
+    if(b.a === 'append'){
+      var hd = header_(), wd = hd.length, rows = (b.rows || []).map(function(r){ var x = r.map(text_); while(x.length < wd) x.push(''); return x.slice(0, wd); });
+      if(!wd) return json_({ ok:false, error:'no_header' });
+      if(rows.length) t.getRange(t.getLastRow()+1, 1, rows.length, wd).setNumberFormat('@').setValues(rows);
+      return json_({ ok:true, added:rows.length, total:t.getLastRow()-1 });
+    }
+    if(b.a === 'finish'){
+      var m = getSetting_('meta') || {}, nm = b.meta || {};
+      if(nm.reportEndDateISO && (!m.reportEndDateISO || nm.reportEndDateISO > m.reportEndDateISO)) m.reportEndDateISO = nm.reportEndDateISO;
+      m.lastUpdated = nm.lastUpdated || new Date().toISOString();
+      m.uploadedFiles = (m.uploadedFiles || []).concat(nm.files || []).slice(-60);
+      setSetting_('meta', m);
+      log_('finish', (nm.files || []).map(function(f){ return f.name + ' (' + f.rows + ')'; }).join(', ') + ' · total ' + (t.getLastRow()-1));
+      cacheClear_(); warm_();
+      return json_({ ok:true, total:t.getLastRow()-1 });
+    }
+    if(b.a === 'settings'){
+      var cur = getSetting_('settings') || {}, inc = b.settings || {};
+      for(var k in inc) cur[k] = inc[k];
+      setSetting_('settings', cur); log_('settings', Object.keys(inc).join(', '));
+      cacheClear_(); warm_();
+      return json_({ ok:true });
+    }
+    return json_({ ok:false, error:'unknown' });
+  } finally { lock.releaseLock(); }
+}
