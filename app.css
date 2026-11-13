@@ -294,3 +294,37 @@ table.ins-t td.num,table.det-t td.num{text-align:right}
 .set-g{font-size:14px;font-weight:600;margin:12px 0 2px;color:var(--gold)}
 .set-toggle{display:flex;gap:8px;align-items:center;margin:12px 0 4px;font-size:14px}
 .set-t td{white-space:normal!important;text-align:left!important;min-width:140px}
+
+/* ---- tables fit their card, no inner scroll boxes ---- */
+#rankTableWrap,#paretoTableWrap,.tw,#cancelArea .tw{max-height:none!important;overflow-x:auto;overflow-y:visible}
+#rankTableWrap.fit,#paretoTableWrap.fit,.tw.fit{overflow:visible}
+table.fixed-cols{min-width:0}
+thead th{padding:.6em .55em;white-space:normal}
+tbody td{padding:.55em .6em}
+table.cx-t th,table.cx-t td{padding:.5em .55em}
+thead th.grp{white-space:nowrap}
+.fit thead th{top:var(--topH,0px)}
+#rankTable thead tr:first-child th{height:auto}
+#rankTable thead tr:first-child th.grp{height:36px}
+table.cx-t thead tr:first-child th.grp{height:34px}
+.fit #rankTable thead tr:nth-child(2) th{top:calc(var(--topH,0px) + 36px)}
+.fit table.cx-t thead tr:nth-child(2) th{top:calc(var(--topH,0px) + 34px)}
+tr.sum td{font-weight:700;background:var(--soft)!important;border-top:2px solid var(--line)}
+tr.sum td .dlt{font-weight:500}
+tbody tr.sum{cursor:default}
+#rankTableWrap.fit,#paretoTableWrap.fit,.tw.fit,#cancelArea .tw.fit{overflow:visible!important}
+table.cx-t thead th{white-space:normal}
+table.cx-t thead th.grp{white-space:nowrap}
+table.cx-r td.cx-main{min-width:72px}
+table.cx-r td.cx-sub{min-width:96px}
+table.det-t td:not(.num){white-space:normal}
+table.det-t td:first-child{white-space:nowrap}
+.det-why{min-width:0!important;max-width:200px}
+.ins-v{min-width:92px}
+.ins-v .ins-bar{max-width:calc(100% - 56px)}
+@media (max-width:639px){thead th{padding:.5em .35em}tbody td,table.cx-t td{padding:.45em .4em}.dlt{font-size:.85em}}
+table.fixed-cols thead th{white-space:normal}
+table.fixed-cols thead th.grp{white-space:nowrap}
+@media (max-width:639px){table.fixed-cols td,table.cx-t td{white-space:nowrap}table.cx-t td.cx-sub,table.cx-r td.cx-main,.ins-name,.det-why{white-space:normal}#rankTable td:nth-child(2),#cxRegionTable td:first-child{white-space:normal;min-width:64px}table.ins-t td:first-child{min-width:0}}
+@media (max-width:639px){#scorecardTable td:first-child{white-space:normal;min-width:104px}.ins-v{min-width:64px}table.cx-r td.cx-sub{min-width:80px}table.cx-r td.cx-main{min-width:56px}.rk{width:20px;height:20px;font-size:11px}}
+@media (max-width:639px){table.ins-t td:nth-child(3),table.ins-t td:nth-child(4){white-space:normal;min-width:52px}}

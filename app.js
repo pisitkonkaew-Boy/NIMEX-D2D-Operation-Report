@@ -3593,6 +3593,100 @@ function decodeBootRows(B){
 // a bill belongs to its creation day; a re-upload replaces whole creation days
 const rowDayKey = r => r.createDateISO || ('K:' + r.confirmDateISO);
 
+/* ============================== TABLES FIT THEIR CARD + TOTAL ROW EVERYWHERE ==============================
+   - No inner scroll boxes: a table grows to its full height inside the page.
+   - If a table is wider than its card, its font steps down (to 10.5px) until it fits; only if it still cannot fit
+     (e.g. the bill list on a phone) the card scrolls sideways.
+   - Headers stay visible under the top bar while the page scrolls (when the table fits).
+   - Every table ends with a "รวม" row computed with the same functions as the rows above. */
+function fitTables(){
+  const top = document.querySelector('.top');
+  document.documentElement.style.setProperty('--topH', (top ? top.getBoundingClientRect().height : 0) + 'px');
+  const wraps = [...document.querySelectorAll('.tw, #rankTableWrap, #paretoTableWrap')];
+  ['scorecardTable','compareChangeTable'].forEach(id=>{ const t = document.getElementById(id); if(t) wraps.push(t.parentElement); });
+  wraps.forEach(w=>{
+    const t = w.querySelector('table'); if(!t || !w.offsetParent) return;
+    t.style.fontSize = ''; t.style.zoom = '';
+    let fs = parseFloat(getComputedStyle(t).fontSize) || 14;
+    w.classList.add('fit');
+    const minFs = innerWidth < 640 ? 9 : 10.5;
+    while(t.scrollWidth > w.clientWidth + 1 && fs > minFs){ fs -= 0.5; t.style.fontSize = fs + 'px'; }
+    t.style.zoom = '';
+    const ratio = w.clientWidth / t.scrollWidth;
+    if(ratio < 1 && ratio >= 0.85) t.style.zoom = String(Math.floor(ratio*1000)/1000 - 0.004); // last small step: shrink the whole table to fit
+    w.classList.toggle('fit', t.scrollWidth * (parseFloat(t.style.zoom)||1) <= w.clientWidth + 1);
+  });
+}
+let __fitT = null;
+window.addEventListener('resize', ()=>{ clearTimeout(__fitT); __fitT = setTimeout(fitTables, 120); });
+
+/* ---- total rows ---- */
+function totalRowRank(f, level, cols){
+  const scope = { product:f.product, start:f.start, end:f.end, zone:f.zone, dc:'' };
+  const a = analyze(filterRecords(level==='dc' ? scope : { ...scope, zone:'' }));
+  const pr = prevRangeFor(f);
+  const p = pr ? analyze(filterRecords(level==='dc' ? { ...scope, start:pr.start, end:pr.end } : { ...scope, zone:'', start:pr.start, end:pr.end })) : null;
+  const tr = document.createElement('tr'); tr.className = 'sum';
+  tr.innerHTML = `<td></td><td>รวม${level==='dc' ? ' ภาค ' + xEsc(f.zone) : 'ทุกภาค'}</td>` + cols.map(c=>{
+    const v = a[c.k];
+    const dl = (SETTINGS.rankDeltas && c.pct && p && p.total && v!==null && p[c.k]!==null) ? (()=>{ const d = v - p[c.k]; return Math.abs(d)<0.05 ? '<span class="dlt flat">▬</span>' : `<span class="dlt ${d>0?'good':'bad'}">${d>0?'▲':'▼'}${Math.abs(d).toFixed(1)}</span>`; })() : '';
+    return `<td class="num"${c.pct?` style="color:${gradeColor(v, TARGETS[c.target])};"`:''}>${c.f(v)}${dl}</td>`;
+  }).join('');
+  return tr;
+}
+const __renderRankTable0 = renderRankTable;
+renderRankTable = function(rows, level){
+  __renderRankTable0(rows, level);
+  if(!rows.length) return;
+  const cols = SETTINGS.rankCols.map(k=> RANK_COLS.find(c=>c.k===k)).filter(Boolean);
+  document.getElementById('rankBody').appendChild(totalRowRank(getFilters(), level, cols));
+};
+const __renderParetoTable0 = renderParetoTable;
+renderParetoTable = function(rows){
+  __renderParetoTable0(rows);
+  if(!rows.length) return;
+  const fail = rows.reduce((s,r)=>s+r.failCount,0), tot = rows.reduce((s,r)=>s+r.total,0);
+  const tr = document.createElement('tr'); tr.className = 'sum';
+  tr.innerHTML = `<td></td><td>รวม ${fmtNum(rows.length)} รายการ</td><td class="num">${fmtNum(fail)}</td><td class="num">${fmtPct(rows.reduce((s,r)=>s+(r.failShare||0),0))}</td><td class="num">${fmtNum(tot)}</td><td class="num">${fmtPct(tot ? fail/tot*100 : null)}</td>`;
+  document.getElementById('paretoBody').appendChild(tr);
+};
+const __renderCompareChangeTable0 = renderCompareChangeTable;
+renderCompareChangeTable = function(curRecords, prevRecords, dim, kpiKey){
+  __renderCompareChangeTable0(curRecords, prevRecords, dim, kpiKey);
+  const c = rateFor(analyze(curRecords), kpiKey), p = rateFor(analyze(prevRecords), kpiKey);
+  if(c===null && p===null) return;
+  const d = (c!==null && p!==null) ? c - p : null;
+  const tr = document.createElement('tr'); tr.className = 'sum';
+  tr.innerHTML = `<td></td><td>รวม</td><td class="num">${fmtPct(c)}</td><td class="num">${fmtPct(p)}</td><td class="num">${d===null?'–':(Math.abs(d)<0.001?'▬ ':d>0?'▲ ':'▼ ')+Math.abs(d).toFixed(1)+'pt'}</td>`;
+  document.getElementById('compareChangeBody').appendChild(tr);
+};
+function insightTotalRow(f){
+  const M = METRICS[INS.metric], a = analyze(filterRecords(f)), v = M.v(a);
+  const pr = prevRangeFor(f); const pa = pr ? analyze(filterRecords({ ...f, start:pr.start, end:pr.end })) : null; const p = pa && pa.total ? M.v(pa) : null;
+  const d = (p===null || v===null) ? null : v - p, bad = d!==null && (M.worse==='low' ? d < 0 : d > 0);
+  const dTxt = d===null ? '–' : Math.abs(d) < (M.pct?0.05:0.5) ? '▬' : `${d>0?'▲':'▼'} ${M.pct?Math.abs(d).toFixed(1)+'pt':fmtNum(Math.abs(d))}`;
+  const tr = document.createElement('tr'); tr.className = 'sum';
+  tr.innerHTML = `<td></td><td>รวมทั้งหมด</td><td>${f.zone ? xEsc(f.zone) : 'ทุกภาค'}</td>${INS.dim!=='dc'?'<td></td>':''}<td class="num">${fmtNum(a.total)}</td><td class="num"><b>${M.pct?fmtPct(v):fmtNum(v)}</b></td><td class="num ${d===null||dTxt==='▬'?'':bad?'badt':'good'}">${dTxt}</td>`;
+  return tr;
+}
+const __insight0 = XTABS.insight;
+XTABS.insight = function(f){
+  __insight0(f);
+  const body = document.getElementById('insBody');
+  if(body.querySelector('tr[data-ins]')) body.appendChild(insightTotalRow(f));
+};
+const __detail0 = XTABS.detail;
+XTABS.detail = function(f){
+  __detail0(f);
+  const rows = detailRows(f); if(!rows.length) return;
+  const tr = document.createElement('tr'); tr.className = 'sum';
+  tr.innerHTML = `<td>รวม ${fmtNum(rows.length)} บิล</td>` + '<td></td>'.repeat(DET_COLS.length - 3) +
+    `<td class="num">${fmtNum(rows.reduce((s,r)=>s+r.qty,0))}</td><td class="num">${fmtNum(rows.reduce((s,r)=>s+r.fee,0))}</td>`;
+  document.getElementById('detBody').appendChild(tr);
+};
+const __renderAllFit = renderAll;
+renderAll = function(){ __renderAllFit(); try{ fitTables(); }catch(e){ console.error(e); } };
+
 
 /* ============================== INIT ============================== */
 function checkLibsLoaded(){
