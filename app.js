@@ -3455,7 +3455,7 @@ async function xLogo(){
   return (__xLogo = await new Promise(r=>{ const fr = new FileReader(); fr.onload = ()=> r(fr.result); fr.readAsDataURL(b); }));
 }
 function xHead(W, H0, id, LOGO){
-  const pw = H0>120 ? 250 : 156, ph = H0-46, ly = (H0-5-ph)/2, m = 24, pl = xPeriodLabels(), L = [pl.cur, pl.prev ? 'เทียบ ' + pl.prev : '', xScopeLabel()].filter(Boolean), big = H0>120;
+  const pw = H0>120 ? 250 : 156, ph = H0-46, ly = (H0-5-ph)/2, m = 24, pl = xPeriodLabels(), L = [pl.cur, pl.prev ? 'เทียบ ' + pl.prev : 'ไม่มีช่วงก่อนหน้า', xScopeLabel()], big = H0>120;
   const dots = [.3,.42,.58,.7].map((f,i)=>`<circle cx="${W*f}" cy="${H0-20-(i%2)*14}" r="4" fill="#d4af37"/>`).join('');
   return `<defs><linearGradient id="${id}" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#071f4a"/><stop offset=".5" stop-color="#143f8c"/><stop offset="1" stop-color="#071f4a"/></linearGradient></defs><rect width="${W}" height="${H0}" fill="url(#${id})"/>
   <path d="M${W*.24} ${H0-20}C${W*.3} ${H0-46} ${W*.36} ${H0-6} ${W*.42} ${H0-34}S${W*.54} ${H0-8} ${W*.58} ${H0-20}S${W*.68} ${H0-44} ${W*.76} ${H0-20}" fill="none" stroke="#6e93d6" stroke-width="2" stroke-dasharray="6 7" opacity=".55"/>${big?dots:''}<rect y="${H0-5}" width="${W}" height="5" fill="#d4af37"/>
@@ -3686,6 +3686,269 @@ XTABS.detail = function(f){
 };
 const __renderAllFit = renderAll;
 renderAll = function(){ __renderAllFit(); try{ fitTables(); }catch(e){ console.error(e); } };
+
+/* ============================== EXPORT EXTENSIONS (skill: nimex-export-infographic-169) ==============================
+   Owner's choices (22 Nov 2026):
+   - Grade A–F from the gap to the target: A = on/above target, B ≤1pt below, C ≤2pt, D ≤3pt, F >3pt.
+   - 16:9 card row: KPI1 · KPI2 · KPI3 · bills · revenue · % cancelled.
+   - 4 charts: (1) KPI1–3 by product group AB/CC with bill counts, (2) KPI3 by region AB vs CC,
+               (3) KPI2 vs KPI3 by region, (4) DC grade donut (KPI3) + worst 3 DCs.
+   - In exports, change vs the previous period: better = green, worse = red; no previous period -> "ไม่มีช่วงก่อนหน้า".
+   - Best/worst lists only rank DCs / regions with at least XMIN bills (small DCs swing too much); bill counts are shown. */
+const XMIN = 20;
+const XG = { good:'#1e9e5a', bad:'#c0392b', goodOnNavy:'#7ee2a8', badOnNavy:'#ff9aa9', flat:'#8a9ab5' };
+const GRADE_COL = { A:'#1d57b8', B:'#6e93d6', C:'#d4a72c', D:'#d9822b', F:'#b8334a', '–':'#8a9ab5' };
+function xGrade(v, target){ if(v===null||v===undefined||isNaN(v)) return '–'; const d = target - v; return d<=0 ? 'A' : d<=1 ? 'B' : d<=2 ? 'C' : d<=3 ? 'D' : 'F'; }
+XL.good = XG.good; XL.bad = XG.bad; // deltas in exports: green / red
+XICON.dcworst = '<path d="M3 21h18M6 21V9M12 21V4M18 21v-7"/><path d="M15 7l3 3 3-3"/>';
+XICON.group = '<rect x="3" y="4" width="8" height="16" rx="2"/><rect x="13" y="8" width="8" height="12" rx="2"/>';
+XICON.bw = '<path d="M7 4h10v5a5 5 0 01-10 0zM12 14v4M8 21h8M4 5H2v2a3 3 0 003 3M20 5h2v2a3 3 0 01-3 3"/>';
+
+/* ---- indicators that can be ranked best/worst ---- */
+const XIND = {
+  kpi1:   { t:'KPI1 เข้ารับได้ทั้งหมด', low:false },
+  kpi2:   { t:'KPI2 ตรงวันนัด',        low:false },
+  kpi3:   { t:'KPI3 เข้ารับสำเร็จ',      low:false },
+  cancel: { t:'% บิลยกเลิก',           low:true  },   // lower = better
+};
+['kpi1','kpi2','kpi3','cancel'].forEach(k=> XSECS.push(['bw_'+k, 'ดีสุด/แย่สุด: ' + XIND[k].t]));   // not ticked by default
+XSECS.splice(3, 0, ['dcworst','DC ต่ำสุด 10 อันดับ (KPI3)'], ['group','กลุ่มสินค้า AB / CC']);
+
+/* rows of one level ('dc' | 'zone') with KPI1–3 (+ previous) and % cancelled (creation-date basis) */
+function xLevelRows(level, opt={}){
+  const f = getFilters(), pr = prevRangeFor(f);
+  const base = { product: opt.anyProduct ? '' : f.product, start:f.start, end:f.end, zone: level==='dc' ? f.zone : '', dc:'' };
+  const rows = buildRanking(filterRecords(base), level);
+  const prev = pr ? new Map(buildRanking(filterRecords({ ...base, start:pr.start, end:pr.end }), level).map(r=>[r.key, r])) : null;
+  const cx = new Map(), cxp = new Map();
+  const keyOf = r => level==='dc' ? r.dcCode : r.zone;
+  const add = (m, list)=> list.forEach(r=>{ const k = keyOf(r); (m.get(k) || m.set(k, []).get(k)).push(r); });
+  add(cx, cxScope(base, f.start, f.end)); if(pr) add(cxp, cxScope(base, pr.start, pr.end));
+  return rows.map(r=>{
+    const c = cx.has(r.key) ? cxAgg(cx.get(r.key)) : null, cp = cxp.has(r.key) ? cxAgg(cxp.get(r.key)) : null;
+    const zone = level==='dc' ? (RECORDS.find(x=>x.dcCode===r.key)||{}).zone : r.key;
+    return { ...r, zone, p: prev ? prev.get(r.key) || null : null, cancel: c ? c.rateBills : null, cancelN: c ? c.bills : 0, pcancel: cp ? cp.rateBills : null };
+  });
+}
+function xVal(r, k){ return k==='cancel' ? r.cancel : r[k]; }
+function xPrevVal(r, k){ return k==='cancel' ? r.pcancel : (r.p ? r.p[k] : null); }
+function xN(r, k){ return k==='cancel' ? r.cancelN : r.total; }
+function xBestWorst(level, k, N){
+  const ind = XIND[k];
+  const list = xLevelRows(level).filter(r=> xVal(r,k)!==null && !isNaN(xVal(r,k)) && xN(r,k) >= XMIN);
+  list.sort((a,b)=> (ind.low ? xVal(a,k)-xVal(b,k) : xVal(b,k)-xVal(a,k)) || (xN(b,k)-xN(a,k)));   // best first
+  const n = list.length >= 2*N ? N : Math.floor(list.length/2);
+  return { all:list, best:list.slice(0,n), worst:list.slice(list.length-n).reverse(), n };
+}
+function xDeltaTxt(d, pct){ if(d===null||d===undefined||isNaN(d)) return 'ไม่มีช่วงก่อนหน้า'; if(Math.abs(d) < (pct?0.05:0.5)) return '▬'; return `${d>0?'▲':'▼'} ${pct?Math.abs(d).toFixed(1)+'pt':fmtNum(Math.abs(d))}`; }
+function xDeltaCol(d, low, onNavy){ if(d===null||d===undefined||isNaN(d)||Math.abs(d)<0.05) return onNavy ? '#cfdcf2' : XG.flat; const good = low ? d<0 : d>0; return onNavy ? (good?XG.goodOnNavy:XG.badOnNavy) : (good?XG.good:XG.bad); }
+
+/* ---- KPI piece: green/red change, grade letter, "ไม่มีช่วงก่อนหน้า" ---- */
+const __xPiece0 = xPiece;
+xPiece = function(k, w, o={}){
+  const h = o.h;
+  if(k==='kpi'){
+    const K = xKpis(), gap = 12, cols = 3, cw = (w-(cols-1)*gap)/cols, natCh = 132, ch = h ? Math.max(natCh, (h-gap)/2) : natCh, ics = ['truck','truck','truck','bill','box','money'];
+    let s = '';
+    K.list.forEach((t,i)=>{ const x = i%cols*(cw+gap), y = Math.floor(i/cols)*(ch+gap), g = t.pct ? xGrade(t.v, t.target) : null;
+      s += `<g transform="translate(${x} ${y})"><rect width="${cw}" height="${ch}" rx="14" fill="#0a2a5e"/><path d="M0 ${ch-5}h${cw}v0c0 3-2 5-5 5H5c-3 0-5-2-5-5z" fill="${t.bar}"/><circle cx="26" cy="26" r="15" fill="#d4af37"/>${xI(ics[i],16,16,20,'#0a2a5e',2.2)}
+        ${g?`<rect x="${cw-50}" y="12" width="38" height="28" rx="8" fill="${GRADE_COL[g]}"/><text x="${cw-31}" y="32" text-anchor="middle" font-size="17" font-weight="600" fill="#fff">${g}</text>`:''}
+        <text x="${cw/2}" y="${ch*.24}" text-anchor="middle" font-size="16" fill="#e6d79c">${xe(t.l)}</text>
+        <text x="${cw/2}" y="${ch*.53}" text-anchor="middle" font-size="36" font-weight="600" fill="#fff">${xe(t.txt)}</text>
+        <text x="${cw/2}" y="${ch*.53+26}" text-anchor="middle" font-size="13.5" fill="#cfdcf2">${xe(t.sub)}</text>
+        <text x="${cw/2}" y="${ch-16}" text-anchor="middle" font-size="14" fill="${xDeltaCol(t.d,false,true)}">${xe(xDeltaTxt(t.d, t.pct))}${t.prevTxt?` · ก่อนหน้า ${xe(t.prevTxt)}`:''}</text></g>`; });
+    return { t:'KPI หลัก', s, h: 2*ch+gap };
+  }
+  if(k==='dcworst'){
+    const R = xLevelRows('dc').filter(r=> r.kpi3!==null && r.total >= XMIN).sort((a,b)=> a.kpi3-b.kpi3 || b.total-a.total).slice(0,10);
+    const d = r => r.p && r.p.kpi3!==null ? r.kpi3 - r.p.kpi3 : null;
+    const t = xTable([{ t:'#', w:.6, c:1, rank:1, f:()=>'' }, { t:'DC', w:2.3, b:1, f:r=>r.label }, { t:'ภาค', w:1.4, f:r=>r.zone }, { t:'บิล', w:1, r:1, f:r=>fmtNum(r.total) },
+      { t:'KPI1', w:1.1, r:1, f:r=>fmtPct(r.kpi1) }, { t:'KPI2', w:1.1, r:1, f:r=>fmtPct(r.kpi2) }, { t:'KPI3', w:1.1, r:1, b:1, f:r=>fmtPct(r.kpi3), col:r=>xGradeColor(r.kpi3,TARGETS.kpi3) },
+      { t:'เกรด', w:.8, c:1, b:1, f:r=>xGrade(r.kpi3,TARGETS.kpi3), col:r=>GRADE_COL[xGrade(r.kpi3,TARGETS.kpi3)] }, { t:'±KPI3', w:1.5, r:1, f:r=>xDeltaTxt(d(r),true), col:r=>xDeltaCol(d(r)) }], R, w, h);
+    return { t:`DC ที่ KPI3 ต่ำสุด 10 อันดับ (เฉพาะ DC ที่มี ≥${XMIN} บิล)`, s:t.s, h:t.h };
+  }
+  if(k==='group'){
+    const f = getFilters(), K = computeKpiSet({ ...f, product:'' }), pr = prevRangeFor(f);
+    const prevOf = prod => { if(!pr) return null; const l = filterRecords({ zone:f.zone, dc:f.dc, product:prod, start:pr.start, end:pr.end }); return l.length ? analyze(l) : null; };
+    const rows = [['AB · ทั่วไป', K.ab, prevOf('AB')], ['CC · Cold Chain', K.cc, prevOf('CC')], ['รวม', K.overall, K.prev]].map(([l,a,p])=>({ l, a, p }));
+    const dd = (r,kk)=> r.p && r.p[kk]!==null && r.a[kk]!==null ? r.a[kk]-r.p[kk] : null;
+    const t = xTable([{ t:'กลุ่มสินค้า', w:2.2, b:1, f:r=>r.l }, { t:'บิล', w:1.1, r:1, f:r=>fmtNum(r.a.total) },
+      ...['kpi1','kpi2','kpi3'].map(kk=>({ t:kk.toUpperCase(), w:1.2, r:1, b:1, f:r=>fmtPct(r.a[kk]), col:r=>xGradeColor(r.a[kk],TARGETS[kk]) })),
+      { t:'เกรด KPI3', w:1, c:1, b:1, f:r=>xGrade(r.a.kpi3,TARGETS.kpi3), col:r=>GRADE_COL[xGrade(r.a.kpi3,TARGETS.kpi3)] }, { t:'±KPI3', w:1.5, r:1, f:r=>xDeltaTxt(dd(r,'kpi3'),true), col:r=>xDeltaCol(dd(r,'kpi3')) }], rows, w, h);
+    return { t:'ผลแยกกลุ่มสินค้า' + (f.zone ? ' · ภาค ' + f.zone : ''), s:t.s, h:t.h };
+  }
+  if(k.startsWith('bw_')){
+    const kk = k.slice(3), ind = XIND[kk], f = getFilters(), pct = v => v===null ? '–' : fmtPct(v);
+    const D = xBestWorst('dc', kk, 5), Z = f.zone ? null : xBestWorst('zone', kk, 3);
+    const half = (w-24)/2, rh = 30;
+    const tbl = (rows, title, col, x, y)=>{ const tt = xTable([{ t:'#', w:.6, c:1, f:(r)=>String(rows.indexOf(r)+1) }, { t:title, w:2.6, b:1, f:r=>r.label + (r.zone && r.zone!==r.label ? ' · '+r.zone : '') }, { t:'บิล', w:1, r:1, f:r=>fmtNum(xN(r,kk)) }, { t:ind.t.split(' ')[0], w:1.2, r:1, b:1, f:r=>pct(xVal(r,kk)), col:()=>col }, { t:'±', w:1.4, r:1, f:r=>{ const p = xPrevVal(r,kk); return xDeltaTxt(p===null?null:xVal(r,kk)-p, true); }, col:r=>{ const p = xPrevVal(r,kk); return xDeltaCol(p===null?null:xVal(r,kk)-p, ind.low); } }], rows, half);
+      return { s:`<g transform="translate(${x} ${y})">${tt.s}</g>`, h:tt.h }; };
+    let s = '', y = 0;
+    const block = (B, lab)=>{ if(!B || !B.n){ s += `<text x="0" y="${y+22}" font-size="15" fill="${XL.muted}">${lab}: มีรายการไม่พอจัดอันดับ (ต้องมีอย่างน้อย 2 รายการที่มี ≥${XMIN} บิล)</text>`; y += 36; return; }
+      s += `<text x="0" y="${y+20}" font-size="16" font-weight="600" fill="${XG.good}">▲ ${lab}ดีสุด ${B.n}</text><text x="${half+24}" y="${y+20}" font-size="16" font-weight="600" fill="${XG.bad}">▼ ${lab}แย่สุด ${B.n}</text>`; y += 30;
+      const a = tbl(B.best, lab, XG.good, 0, y), b = tbl(B.worst, lab, XG.bad, half+24, y); s += a.s + b.s; y += Math.max(a.h, b.h) + 18; };
+    block(D, 'DC'); if(Z) block(Z, 'ภาค');
+    return { t:`ดีสุด / แย่สุด: ${ind.t}${ind.low?' (ต่ำ = ดี)':''}`, s, h: h ? Math.max(h, y) : y };
+  }
+  return __xPiece0(k, w, o);
+};
+
+/* ---- Excel sheets for the new sections ---- */
+const __xSheets0 = xSheets;
+xSheets = function(){
+  const out = __xSheets0();
+  if(xPicked.has('dcworst')){ const R = xLevelRows('dc').filter(r=>r.kpi3!==null && r.total>=XMIN).sort((a,b)=>a.kpi3-b.kpi3 || b.total-a.total).slice(0,10);
+    out.push(['DC ต่ำสุด 10', [['อันดับ','DC','ภาค','บิล','KPI1 (%)','KPI2 (%)','KPI3 (%)','เกรด KPI3','KPI3 ช่วงก่อน','ผลต่าง (pt)'], ...R.map((r,i)=>[i+1, r.label, r.zone, r.total, +(+r.kpi1).toFixed(2), +(+r.kpi2).toFixed(2), +(+r.kpi3).toFixed(2), xGrade(r.kpi3,TARGETS.kpi3), r.p&&r.p.kpi3!==null?+r.p.kpi3.toFixed(2):'ไม่มีช่วงก่อนหน้า', r.p&&r.p.kpi3!==null?+(r.kpi3-r.p.kpi3).toFixed(2):''])]]); }
+  if(xPicked.has('group')){ const K = computeKpiSet({ ...getFilters(), product:'' });
+    out.push(['กลุ่มสินค้า', [['กลุ่ม','บิล','KPI1 (%)','KPI2 (%)','KPI3 (%)','เกรด KPI1','เกรด KPI2','เกรด KPI3'], ...[['AB · ทั่วไป',K.ab],['CC · Cold Chain',K.cc],['รวม',K.overall]].map(([l,a])=>[l, a.total, ...['kpi1','kpi2','kpi3'].map(k=> a[k]===null?'':+a[k].toFixed(2)), ...['kpi1','kpi2','kpi3'].map(k=> xGrade(a[k],TARGETS[k]))])]]); }
+  Object.keys(XIND).forEach(kk=>{
+    if(!xPicked.has('bw_'+kk)) return;
+    const rowsFor = (level, N)=>{ const B = xBestWorst(level, kk, N); const bs = new Set(B.best), ws = new Set(B.worst);
+      return B.all.map((r,i)=>[level==='dc'?'DC':'ภาค', i+1, r.label, r.zone||'', xN(r,kk), xVal(r,kk)===null?'':+xVal(r,kk).toFixed(2), xPrevVal(r,kk)===null?'ไม่มีช่วงก่อนหน้า':+xPrevVal(r,kk).toFixed(2), bs.has(r)?'ดีสุด':ws.has(r)?'แย่สุด':'']); };
+    out.push(['ดีแย่ ' + (kk==='cancel'?'ยกเลิก':kk.toUpperCase()), [[`${XIND[kk].t}${XIND[kk].low?' (ต่ำ = ดี)':''} · เฉพาะรายการที่มี ≥${XMIN} บิล · เรียงจากดีไปแย่`], ['ระดับ','อันดับ','ชื่อ','ภาค','บิล','ค่า (%)','ช่วงก่อน (%)','ป้าย'], ...rowsFor('dc',5), ...(getFilters().zone ? [] : rowsFor('zone',3))]]);
+  });
+  return out;
+};
+
+/* ---- emoji text ---- */
+const __xSummaryText0 = xSummaryText;
+xSummaryText = function(){
+  const L = [__xSummaryText0()];
+  if(xPicked.has('dcworst')){ const R = xLevelRows('dc').filter(r=>r.kpi3!==null && r.total>=XMIN).sort((a,b)=>a.kpi3-b.kpi3 || b.total-a.total).slice(0,5);
+    L.push('', '📉 DC ที่ KPI3 ต่ำสุด'); R.forEach((r,i)=> L.push(`${MD[i]} ${r.label} (${r.zone}, ${fmtNum(r.total)} บิล): ${fmtPct(r.kpi3)} เกรด ${xGrade(r.kpi3,TARGETS.kpi3)}`)); }
+  if(xPicked.has('group')){ const K = computeKpiSet({ ...getFilters(), product:'' });
+    L.push('', '📦 กลุ่มสินค้า'); [['AB · ทั่วไป',K.ab],['CC · Cold Chain',K.cc]].forEach(([l,a])=> L.push(`${l} (${fmtNum(a.total)} บิล): KPI1 ${fmtPct(a.kpi1)} · KPI2 ${fmtPct(a.kpi2)} · KPI3 ${fmtPct(a.kpi3)}`)); }
+  Object.keys(XIND).forEach(kk=>{
+    if(!xPicked.has('bw_'+kk)) return;
+    const D = xBestWorst('dc', kk, 5); if(!D.n) return;
+    L.push('', `🏆 ${XIND[kk].t}${XIND[kk].low?' (ต่ำ = ดี)':''}`);
+    L.push('✅ ดีสุด: ' + D.best.slice(0,3).map(r=>`${r.label} ${fmtPct(xVal(r,kk))}`).join(' · '));
+    L.push('⚠️ แย่สุด: ' + D.worst.slice(0,3).map(r=>`${r.label} ${fmtPct(xVal(r,kk))}`).join(' · '));
+  });
+  return L.join('\n');
+};
+
+/* ============================== 16:9 INFOGRAPHIC (1920×1080 -> PNG 3840×2160) ============================== */
+function xTicks(rng){ const span = rng.max - rng.min; const n = span <= 8 ? span : (span % 5 === 0 ? 5 : 4); return Array.from({ length:n+1 }, (_,i)=> rng.min + span*i/n); }
+const xTickTxt = v => (Math.abs(v - Math.round(v)) < 1e-9 ? v.toFixed(0) : v.toFixed(1)) + '%';
+function xAxisRange(vals){ const v = vals.filter(Number.isFinite); if(!v.length) return { min:0, max:100, cut:false }; const lo = Math.min(...v); if(lo < 60) return { min:0, max:100, cut:false }; const min = Math.max(0, Math.floor(lo - 1)); return { min, max:100, cut:min>0 }; }
+function xHGroup({ groups, W, H, names, colors, rng }){
+  // groups: [{l, n, vals:[...]}] -> horizontal bars, one bar per value
+  const lw = 230, rw = 70, top = 8, gh = (H - top - 26) / groups.length, bh = Math.min(26, (gh - 14) / names.length), x0 = lw, iw = W - lw - rw;
+  const X = v => x0 + iw * (Math.max(rng.min, Math.min(rng.max, v)) - rng.min) / (rng.max - rng.min);
+  let s = `<svg viewBox="0 0 ${W} ${H}" ${F}>`;
+  xTicks(rng).forEach(v=>{ s += `<line x1="${X(v)}" x2="${X(v)}" y1="${top}" y2="${H-24}" stroke="${XL.line}"/><text x="${X(v)}" y="${H-6}" text-anchor="middle" font-size="13" fill="${XL.muted}">${xTickTxt(v)}</text>`; });
+  groups.forEach((g, i)=>{ const gy = top + i * gh;
+    s += `<text x="${lw-12}" y="${gy+gh/2-4}" text-anchor="end" font-size="17" font-weight="600" fill="${XL.ink}">${xe(g.l)}</text><text x="${lw-12}" y="${gy+gh/2+16}" text-anchor="end" font-size="13.5" fill="${XL.muted}">${fmtNum(g.n)} บิล</text>`;
+    g.vals.forEach((v, j)=>{ const y = gy + (gh - names.length * bh) / 2 + j * bh; if(!Number.isFinite(v)) return;
+      s += `<rect x="${x0}" y="${y+2}" width="${Math.max(2, X(v)-x0)}" height="${bh-5}" rx="4" fill="${colors[j]}"/><text x="${X(v)+6}" y="${y+bh/2+4}" font-size="13.5" font-weight="600" fill="${XL.ink}">${names[j]} ${v.toFixed(1)}%</text>`; }); });
+  return s + '</svg>';
+}
+function xPairBars({ cats, W, H, names, colors, rng }){
+  // cats: [{l, n, a, b}] -> vertical paired bars, region labels with bill counts underneath
+  const m = { l:46, r:8, t:48, b:62 }, iw = W - m.l - m.r, ih = H - m.t - m.b, cw = iw / Math.max(1, cats.length), bw = Math.min(22, cw * .34);
+  const Y = v => m.t + ih * (1 - (Math.max(rng.min, Math.min(rng.max, v)) - rng.min) / (rng.max - rng.min));
+  let s = `<svg viewBox="0 0 ${W} ${H}" ${F}>`;
+  xTicks(rng).forEach(v=>{ s += `<line x1="${m.l}" x2="${W-m.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${XL.line}"/><text x="${m.l-6}" y="${Y(v)+4}" text-anchor="end" font-size="12" fill="${XL.muted}">${xTickTxt(v)}</text>`; });
+  names.forEach((nm, j)=>{ s += `<rect x="${m.l + j*150}" y="4" width="14" height="14" rx="3" fill="${colors[j]}"/><text x="${m.l + j*150 + 20}" y="16" font-size="14" fill="${XL.ink}">${xe(nm)}</text>`; });
+  cats.forEach((c, i)=>{ const cx = m.l + cw * i + cw / 2;
+    [c.a, c.b].forEach((v, j)=>{ if(!Number.isFinite(v)) return; const x = cx + (j ? 2 : -bw - 2), y = Y(v);
+      s += `<rect x="${x}" y="${y}" width="${bw}" height="${m.t + ih - y}" rx="3" fill="${colors[j]}"/><text x="${x + bw/2}" y="${y - 5 - (j ? 0 : 12) * (Math.abs((c.a||0)-(c.b||0)) < (rng.max-rng.min)*.06 ? 1 : 0)}" text-anchor="middle" font-size="10.5" fill="${XL.ink}">${v.toFixed(1)}</text>`; });
+    s += `<text x="${cx}" y="${H - m.b + 20}" text-anchor="middle" font-size="13.5" font-weight="600" fill="${XL.ink}">${xe(c.l)}</text><text x="${cx}" y="${H - m.b + 38}" text-anchor="middle" font-size="12" fill="${XL.muted}">${fmtNum(c.n)} บิล</text>`; });
+  return s + '</svg>';
+}
+function xDonut({ parts, R, r }){
+  const tot = parts.reduce((s,p)=>s+p.v,0) || 1; let a0 = -Math.PI/2, s = '';
+  parts.forEach(p=>{ if(!p.v) return; const a1 = a0 + 2*Math.PI*p.v/tot, big = a1-a0 > Math.PI ? 1 : 0;
+    const P = (rad, ang)=> `${(R + rad*Math.cos(ang)).toFixed(2)} ${(R + rad*Math.sin(ang)).toFixed(2)}`;
+    s += p.v===tot ? `<circle cx="${R}" cy="${R}" r="${(R+r)/2}" fill="none" stroke="${p.c}" stroke-width="${R-r}"/>` : `<path d="M${P(R,a0)}A${R} ${R} 0 ${big} 1 ${P(R,a1)}L${P(r,a1)}A${r} ${r} 0 ${big} 0 ${P(r,a0)}Z" fill="${p.c}"/>`; a0 = a1; });
+  return s;
+}
+function xInfo169(LOGO){
+  const W = 1920, H = 1080, m = 28, head = 120, foot = 40, f = getFilters(), K = computeKpiSet(f), o = K.overall, p = K.prev;
+  let b = xHead(W, head, 'g169', LOGO);
+  // ---- KPI cards ----
+  const cx = cxAgg(cxScope(f, f.start, f.end)), pr = prevRangeFor(f), cxp = pr ? cxScope(f, pr.start, pr.end) : [], cP = cxp.length ? cxAgg(cxp) : null;
+  const cards = [
+    { l:'KPI1 เข้ารับได้ทั้งหมด', v:fmtPct(o.kpi1), g:xGrade(o.kpi1,TARGETS.kpi1), sub:`เป้า ${TARGETS.kpi1}%`, d:p?o.kpi1-p.kpi1:null, pct:true },
+    { l:'KPI2 ตรงวันนัด', v:fmtPct(o.kpi2), g:xGrade(o.kpi2,TARGETS.kpi2), sub:`เป้า ${TARGETS.kpi2}%`, d:p?o.kpi2-p.kpi2:null, pct:true },
+    { l:'KPI3 เข้ารับสำเร็จ', v:fmtPct(o.kpi3), g:xGrade(o.kpi3,TARGETS.kpi3), sub:`เป้า ${TARGETS.kpi3}%`, d:p?o.kpi3-p.kpi3:null, pct:true },
+    { l:'จำนวนบิล', v:fmtNum(o.total), sub:`AB ${fmtNum(K.ab.total)} · CC ${fmtNum(K.cc.total)}`, d:p?o.total-p.total:null },
+    { l:'รายได้รวม', v:'฿'+fmtNum(o.totalFee), sub:`${fmtNum(o.totalQty)} กล่อง`, d:p?o.totalFee-p.totalFee:null, cur:true },
+    { l:'% บิลยกเลิก', v:fmtPct(cx.rateBills), sub:`${fmtNum(cx.cBills)} จาก ${fmtNum(cx.bills)} บิล (วันสร้างบิล)`, d:cP?cx.rateBills-cP.rateBills:null, pct:true, low:true },
+  ];
+  const gap = 16, cw = (W - 2*m - 5*gap) / 6, ch = 168, cy = head + 20;
+  cards.forEach((c, i)=>{ const x = m + i*(cw+gap);
+    const dTxt = c.d===null ? 'ไม่มีช่วงก่อนหน้า' : (Math.abs(c.d) < (c.pct?0.05:0.5) ? '▬ เท่าเดิม' : `${c.d>0?'▲':'▼'} ${c.pct?Math.abs(c.d).toFixed(1)+'pt':(c.cur?'฿':'')+fmtNum(Math.abs(c.d))}`);
+    b += `<g transform="translate(${x} ${cy})"><rect width="${cw}" height="${ch}" rx="16" fill="#0a2a5e"/><rect y="${ch-6}" width="${cw}" height="6" fill="${c.g?GRADE_COL[c.g]:'#d4af37'}"/>
+      <text x="${cw/2}" y="34" text-anchor="middle" font-size="18" fill="#e6d79c">${xe(c.l)}</text>
+      <text x="${c.g?cw/2-26:cw/2}" y="86" text-anchor="middle" font-size="${c.v.length>9?34:42}" font-weight="600" fill="#fff">${xe(c.v)}</text>
+      ${c.g?`<rect x="${cw/2+ (c.v.length*11)}" y="54" width="44" height="40" rx="10" fill="${GRADE_COL[c.g]}"/><text x="${cw/2+(c.v.length*11)+22}" y="83" text-anchor="middle" font-size="24" font-weight="600" fill="#fff">${c.g}</text>`:''}
+      <text x="${cw/2}" y="116" text-anchor="middle" font-size="14" fill="#cfdcf2">${xe(c.sub)}</text>
+      <text x="${cw/2}" y="146" text-anchor="middle" font-size="17" font-weight="600" fill="${xDeltaCol(c.d, !!c.low, true)}">${xe(dTxt)}</text></g>`; });
+  // ---- 2×2 charts ----
+  const top = cy + ch + 22, gw = (W - 2*m - 20) / 2, gh = (H - foot - 16 - top - 20) / 2, pad = 18, th = 44;
+  const panel = (i, title, note, svg)=>{ const x = m + (i%2)*(gw+20), y = top + Math.floor(i/2)*(gh+20);
+    const e = xEmbed(svg, pad, th, gw - 2*pad);
+    return `<g transform="translate(${x} ${y})"><rect width="${gw}" height="${gh}" rx="16" fill="#fff" stroke="#dbe3f0"/><rect x="${gw*.2}" y="-1.2" width="${gw*.6}" height="2.4" fill="#d4af37"/>
+      <text x="${pad}" y="30" font-size="19" font-weight="600" fill="#0a2a5e">${xe(title)}</text>${note?`<text x="${gw-pad}" y="30" text-anchor="end" font-size="13.5" fill="${XL.muted}">${xe(note)}</text>`:''}${e.s}</g>`; };
+  const iw = gw - 2*pad, ih = gh - th - 12;
+  // (1) KPI1–3 by product group (follows the region/DC filter; ignores the product filter so both groups show)
+  const G = computeKpiSet({ ...f, product:'' });
+  const g1 = [{ l:'AB · ทั่วไป', n:G.ab.total, vals:[G.ab.kpi1, G.ab.kpi2, G.ab.kpi3] }, { l:'CC · Cold Chain', n:G.cc.total, vals:[G.cc.kpi1, G.cc.kpi2, G.cc.kpi3] }];
+  const r1 = xAxisRange(g1.flatMap(g=>g.vals));
+  b += panel(0, 'KPI แยกกลุ่มสินค้า' + (f.zone ? ' · ภาค ' + f.zone : ''), r1.cut ? `แกนเริ่มที่ ${r1.min}%` : '', xHGroup({ groups:g1, W:iw, H:ih, names:['KPI1','KPI2','KPI3'], colors:[XL.s[0], XL.s[1], XL.s[2]], rng:r1 }));
+  // (2) KPI3 by region, AB vs CC (all regions, so regions can be compared)
+  const byZone = (prod)=> new Map(buildRanking(filterRecords({ zone:'', dc:'', product:prod, start:f.start, end:f.end }), 'zone').map(r=>[r.key, r]));
+  const za = byZone('AB'), zc = byZone('CC'), zall = byZone('');
+  const zones = ZONE_ORDER.filter(z=> zall.has(z));
+  const c2 = zones.map(z=>({ l:z, n:zall.get(z).total, a:za.get(z)?za.get(z).kpi3:NaN, b:zc.get(z)?zc.get(z).kpi3:NaN }));
+  const r2 = xAxisRange(c2.flatMap(c=>[c.a,c.b]));
+  b += panel(1, 'KPI3 รายภาค: AB เทียบ CC', (r2.cut ? `แกนเริ่มที่ ${r2.min}% · ` : '') + 'ทุกภาค', xPairBars({ cats:c2, W:iw, H:ih, names:['AB · ทั่วไป','CC · Cold Chain'], colors:[XL.s[1], XL.s[0]], rng:r2 }));
+  // (3) KPI2 vs KPI3 by region (follows the product filter)
+  const zp = new Map(buildRanking(filterRecords({ zone:'', dc:'', product:f.product, start:f.start, end:f.end }), 'zone').map(r=>[r.key, r]));
+  const c3 = ZONE_ORDER.filter(z=> zp.has(z)).map(z=>({ l:z, n:zp.get(z).total, a:zp.get(z).kpi2, b:zp.get(z).kpi3 }));
+  const r3 = xAxisRange(c3.flatMap(c=>[c.a,c.b]));
+  b += panel(2, 'KPI2 ตรงวันนัด เทียบ KPI3 เข้ารับสำเร็จ รายภาค', (r3.cut ? `แกนเริ่มที่ ${r3.min}% · ` : '') + 'ทุกภาค', xPairBars({ cats:c3, W:iw, H:ih, names:['KPI2 ตรงวันนัด','KPI3 เข้ารับสำเร็จ'], colors:[XL.s[1], XL.s[2]], rng:r3 }));
+  // (4) DC grade donut (KPI3) + worst 3 DCs (follows the region filter)
+  const dcs = xLevelRows('dc').filter(r=> r.kpi3!==null && r.total >= XMIN);
+  const cnt = { A:0, B:0, C:0, D:0, F:0 }; dcs.forEach(r=> cnt[xGrade(r.kpi3, TARGETS.kpi3)]++);
+  const worst = dcs.filter(r=> xGrade(r.kpi3, TARGETS.kpi3) !== 'A').sort((a,b)=> a.kpi3-b.kpi3 || b.total-a.total).slice(0,3); // only DCs below target
+  const R = Math.min(ih/2 - 6, 150), rr = R*.6;
+  let s4 = `<svg viewBox="0 0 ${iw} ${ih}" ${F}><g transform="translate(10 ${ih/2-R})">${xDonut({ parts:Object.entries(cnt).map(([g,v])=>({ v, c:GRADE_COL[g] })), R, r:rr })}<text x="${R}" y="${R-4}" text-anchor="middle" font-size="34" font-weight="600" fill="${XL.ink}">${dcs.length}</text><text x="${R}" y="${R+22}" text-anchor="middle" font-size="14" fill="${XL.muted}">DC (≥${XMIN} บิล)</text></g>`;
+  const lx = 2*R + 34;
+  Object.entries(cnt).forEach(([g,v],i)=>{ s4 += `<rect x="${lx}" y="${16+i*30}" width="26" height="22" rx="5" fill="${GRADE_COL[g]}"/><text x="${lx+13}" y="${32+i*30}" text-anchor="middle" font-size="14" font-weight="600" fill="#fff">${g}</text><text x="${lx+36}" y="${32+i*30}" font-size="15" fill="${XL.ink}">${v} DC</text>`; });
+  const wx = lx + 120; s4 += `<text x="${wx}" y="30" font-size="16" font-weight="600" fill="${XG.bad}">▼ DC แย่สุด 3 อันดับ (KPI3)</text>`;
+  worst.forEach((r,i)=>{ const y = 64 + i*58, d = r.p && r.p.kpi3!==null ? r.kpi3 - r.p.kpi3 : null;
+    s4 += `<circle cx="${wx+13}" cy="${y-6}" r="13" fill="#b8334a"/><text x="${wx+13}" y="${y-1}" text-anchor="middle" font-size="14" font-weight="600" fill="#fff">${i+1}</text>
+      <text x="${wx+34}" y="${y-8}" font-size="16" font-weight="600" fill="${XL.ink}">${xe(r.label)}</text><text x="${wx+34}" y="${y+12}" font-size="13" fill="${XL.muted}">${xe(r.zone)} · ${fmtNum(r.total)} บิล · <tspan fill="${xDeltaCol(d)}">${xe(xDeltaTxt(d,true))}</tspan></text>
+      <text x="${iw-4}" y="${y}" text-anchor="end" font-size="22" font-weight="600" fill="${GRADE_COL[xGrade(r.kpi3,TARGETS.kpi3)]}">${fmtPct(r.kpi3)} ${xGrade(r.kpi3,TARGETS.kpi3)}</text>`; });
+  if(!worst.length) s4 += `<text x="${wx}" y="72" font-size="17" font-weight="600" fill="${XG.good}">${dcs.length ? '✓ ทุก DC ถึงเป้า KPI3' : 'ไม่มี DC ที่มี ≥' + XMIN + ' บิล'}</text>`;
+  b += panel(3, 'เกรด DC ตาม KPI3' + (f.zone ? ' · ภาค ' + f.zone : ''), 'A ถึงเป้า · B ≤1pt · C ≤2pt · D ≤3pt · F >3pt', s4 + '</svg>');
+  // ---- footer ----
+  b += `<rect y="${H-foot}" width="${W}" height="${foot}" fill="#0a2a5e"/><rect y="${H-foot}" width="${W}" height="3" fill="#d4af37"/><text x="${W/2}" y="${H-foot/2+6}" text-anchor="middle" font-size="14.5" fill="#dfe8f7">KPI1 = เข้ารับได้ไม่นับยกเลิกโดยบริษัท · KPI2 = สำเร็จในวันนัดแรก (เลื่อนเพราะลูกค้าถือว่าตรง) · KPI3 = เข้ารับสำเร็จ · ตัดสาเหตุลูกค้า · วันทำการ จ.–ส. · ยกเลิกนับตามวันสร้างบิล · ผลต่าง: เขียว = ดีขึ้น แดง = แย่ลง</text>`;
+  return xWrap(W, H, b);
+}
+const __doExport0 = doExport;
+doExport = async function(a){
+  if(a !== 'info169') return __doExport0(a);
+  const btns = document.querySelectorAll('#xModal [data-x]'); btns.forEach(x=> x.disabled = true); xSay('กำลังสร้างอินโฟกราฟิก 16:9…');
+  try{ await document.fonts.ready; const LOGO = await xLogo(); saveBlob(xStamp() + '-Infographic-16x9.png', await xToPng(xInfo169(LOGO), 2, { w:3840, h:2160 })); xSay('ดาวน์โหลดอินโฟกราฟิก 16:9 แล้ว'); }
+  catch(e){ console.error(e); xSay('สร้างอินโฟกราฟิกไม่สำเร็จ'); }
+  btns.forEach(x=> x.disabled = false);
+};
+// 16:9 button (uses the page filters; no need to tick sections)
+(function(){ const info = document.querySelector('#xModal [data-x="info"]'); if(!info) return;
+  const btn = document.createElement('button'); btn.className = 'btn x-gold'; btn.dataset.x = 'info169'; btn.textContent = 'อินโฟกราฟิก 16:9'; info.after(btn);
+  info.textContent = 'อินโฟกราฟิก A4'; })();
+// header / text: say so when the comparison period has no data
+const __xPeriodLabels0 = xPeriodLabels;
+xPeriodLabels = function(){
+  const L = __xPeriodLabels0(), f = getFilters(), pr = prevRangeFor(f);
+  if(pr && !filterRecords({ ...f, start:pr.start, end:pr.end }).length) L.prev = '';
+  if(!L.prev) L.noPrev = true;
+  return L;
+};
 
 
 /* ============================== INIT ============================== */
