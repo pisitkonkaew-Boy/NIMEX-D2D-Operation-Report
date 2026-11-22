@@ -2813,6 +2813,8 @@ const SETTINGS_DEFAULT = {
   rankCols: ['total','totalQty','totalFee','kpi1','kpi2','kpi3'],
   rankDeltas: true,                // ▲▼ under the KPI columns of the main table
   lostBasis: 'piece',              // cancelled-bill lost revenue: 'piece' (avg ฿/piece) or 'bill' (avg ฿/bill)
+  plans: {},                       // Action Plan: '<period>|<reason code>' -> { status, owner, start, note }
+  actionLib: {},                   // Action Plan: admin edits of the solution library per reason code
   savedAt: ''
 };
 let SETTINGS = JSON.parse(JSON.stringify(SETTINGS_DEFAULT));
@@ -2827,6 +2829,8 @@ function applySettings(obj){
     ['excludedDCs','rankCols'].forEach(k=>{ if(Array.isArray(obj[k])) s[k] = obj[k].map(String); });
     ['rankDeltas'].forEach(k=>{ if(typeof obj[k] === 'boolean') s[k] = obj[k]; });
     if(obj.lostBasis === 'bill' || obj.lostBasis === 'piece') s.lostBasis = obj.lostBasis;
+    if(obj.plans && typeof obj.plans === 'object') s.plans = obj.plans;
+    if(obj.actionLib && typeof obj.actionLib === 'object') s.actionLib = obj.actionLib;
     if(obj.savedAt) s.savedAt = obj.savedAt;
   }
   if(!s.rankCols.length) s.rankCols = SETTINGS_DEFAULT.rankCols.slice();
@@ -3501,7 +3505,7 @@ function xSlide(k, LOGO){
 }
 function xToPng(c, scale, exact){
   return new Promise((res, rej)=>{
-    if(c.W*c.H*scale*scale > 16e6) scale = Math.sqrt(16e6/(c.W*c.H));
+    if(c.W*c.H*scale*scale > 16e6) scale = Math.sqrt(15.9e6/(c.W*c.H));
     const u = URL.createObjectURL(new Blob([c.svg], { type:'image/svg+xml' })), im = new Image();
     im.onload = ()=> setTimeout(()=>{ const cv = document.createElement('canvas'); cv.width = exact ? exact.w : Math.round(c.W*scale); cv.height = exact ? exact.h : Math.round(c.H*scale);
       const x = cv.getContext('2d'); x.drawImage(im, 0, 0, cv.width, cv.height); URL.revokeObjectURL(u); cv.toBlob(b=> b ? res(b) : rej(new Error('png')), 'image/png'); }, 150);
@@ -3949,6 +3953,226 @@ xPeriodLabels = function(){
   if(!L.prev) L.noPrev = true;
   return L;
 };
+
+/* ============================== ACTION PLAN (ผล · ปัญหา · แนวทางแก้ไข · ไทม์ไลน์) ==============================
+   Owner's rules (22 Nov 2026):
+   - Problems = bills that failed for COMPANY-side reasons only:
+       company cancellations (KPI1: cancelled with an 01000 Nim Express reason, columns E/F) and
+       pickups that failed because of staff (KPI2/KPI3: 02000 พนักงาน reason, columns O/P).
+     One problem per reason code, inside the current filters + period; shown when it has ≥ AP_MIN bills (max AP_MAX).
+   - Impact: a company cancellation costs KPI1 1/(all bills); a staff failure costs KPI2 and KPI3 1/(bills in the KPI base).
+   - Solutions come from a fixed library per reason code (drafted here, editable by the admin in Settings).
+   - Owner = the team in the library + "DC Leader" of the DCs that hold ≥20% of that problem.
+   - Timeline from severity: high = urgent 3 days / main fix 14 / follow-up 30; medium 7/21/45; low 14/30/60 (days from start).
+   - Status / owner / start / note are saved by the admin in the shared settings (Google Sheet when online). Viewers read only. */
+const AP_MIN = 3, AP_MAX = 8;
+const AP_LIB_DEFAULT = {
+  '01006':   { team:'ทีมจัดรถ (Fleet)', actions:['เทียบจำนวนรถกับจำนวนบิลนัดรับรายวันของ DC ที่เกิดมากที่สุด และระบุวัน/ช่วงเวลาที่รถไม่พอ', 'จัดรถสำรองหรือรถร่วมในวันที่งานล้น และกำหนดเพดานรับนัดต่อวันในระบบ Booking', 'รายงานบิลที่ยังไม่มีรถรับทุกเช้า เพื่อโยกรถก่อนเกิดการยกเลิก'] },
+  '01001':   { team:'ทีมปฏิบัติการ DC', actions:['จัดลำดับเส้นทางเข้ารับใหม่ ให้บิลที่นัดช่วงเช้าได้รถก่อน', 'กำหนดเวลาตัดรอบเข้ารับ และแจ้งลูกค้าล่วงหน้าเมื่อคาดว่าจะล่าช้า', 'ติดตามเวลาเข้ารับจริงเทียบเวลานัดรายวัน'] },
+  '01002':   { team:'ทีม CS', actions:['กำหนดเวลาติดต่อกลับลูกค้าภายใน 2 ชั่วโมง', 'ตั้งรายการแจ้งเตือนเคสที่ยังไม่ได้ติดต่อกลับ', 'จัดเวรผู้รับผิดชอบติดต่อกลับในช่วงงานหนาแน่น'] },
+  '01003':   { team:'ทีม IT / ระบบ', actions:['ตรวจบันทึกระบบและเครือข่ายในวันที่เกิดเหตุ หาสาเหตุหลัก', 'เตรียมแผนสำรองเมื่อระบบใช้งานไม่ได้ (บันทึกงานชั่วคราวแล้วนำเข้าภายหลัง)', 'ตั้งการแจ้งเตือนเมื่อระบบช้าหรือหยุดทำงาน'] },
+  '01004':   { team:'ทีม CS + DC', actions:['ยืนยันนัดเข้ารับให้เสร็จภายในวันก่อนวันนัด', 'ทำรายงานบิลที่ยังไม่ยืนยันส่งให้ DC ทุกบ่าย', 'ทบทวนขั้นตอนการยืนยันที่ใช้เวลานาน'] },
+  '01005':   { team:'ทีม CS', actions:['กำหนดผู้รับผิดชอบโทรยืนยันการเข้ารับรายวัน', 'ใช้รายการบิลที่ต้องโทรยืนยันพร้อมช่องบันทึกผล', 'ตรวจบิลที่ไม่ได้โทรยืนยันทุกสิ้นวัน'] },
+  '01007':   { team:'ทีมปฏิบัติการ DC', actions:['ทำเช็กลิสต์อุปกรณ์ (กล่องเย็น เจลเย็น ฯลฯ) ก่อนออกรถ', 'กำหนดสต็อกอุปกรณ์ขั้นต่ำต่อ DC และสั่งเติมล่วงหน้า', 'ตรวจความพร้อมอุปกรณ์รายสัปดาห์'] },
+  '02001':   { team:'ทีมจัดรถ + DC', actions:['ทบทวนการวางแผนเส้นทางและเวลาที่ใช้ต่อจุดเข้ารับ', 'ลดจำนวนจุดต่อเที่ยวในวันที่งานมาก', 'ติดตามบิลที่เสี่ยงไม่ทันระหว่างวัน'] },
+  '02002':   { team:'ทีมซ่อมบำรุง / Fleet', actions:['ตรวจสภาพรถตามรอบและก่อนออกงาน', 'เตรียมรถสำรองสำหรับกรณีรถเสีย', 'ติดตามรถที่เสียซ้ำ'] },
+  '0200201': { team:'ทีมซ่อมบำรุง / Fleet + ความปลอดภัย', actions:['สอบสวนอุบัติเหตุและหาสาเหตุ', 'อบรมการขับขี่ปลอดภัยให้พนักงานที่เกี่ยวข้อง', 'เตรียมรถสำรองและขั้นตอนโอนงานเมื่อเกิดเหตุ'] },
+  '02003':   { team:'ทีมปฏิบัติการ DC', actions:['ทบทวนการจัดพื้นที่และเส้นทางเข้ารับ', 'อบรมพนักงานเรื่องเส้นทางและการใช้แผนที่', 'ตรวจบิลนอกเส้นทางก่อนจ่ายงาน'] },
+  '02004':   { team:'ทีม IT / ระบบ', actions:['ตรวจปัญหาแอปหรืออุปกรณ์ของพนักงานในวันที่เกิดเหตุ', 'เตรียมวิธีบันทึกงานสำรองเมื่อแอปใช้งานไม่ได้', 'ติดตามปัญหาที่เกิดซ้ำ'] },
+  'C-NONE':  { team:'ทีมปฏิบัติการ DC + CS', actions:['บังคับเลือกสาเหตุย่อยทุกครั้งที่ยกเลิกในฝั่ง Nim Express', 'ตรวจบิลย้อนหลังที่ไม่ระบุสาเหตุ แล้วจัดกลุ่มหาปัญหาจริง', 'อบรมการบันทึกสาเหตุให้ถูกต้อง'] },
+  'S-NONE':  { team:'ทีมปฏิบัติการ DC', actions:['บังคับระบุสาเหตุย่อยเมื่อเข้ารับไม่สำเร็จ', 'ตรวจบิลย้อนหลังที่ไม่ระบุสาเหตุ', 'อบรมการบันทึกผลเข้ารับ'] },
+};
+const AP_SEV = { high:{ t:'สูง', days:[3,14,30], goal:'ลดลงอย่างน้อย 50% ในรอบถัดไป', c:'#b8334a' }, mid:{ t:'กลาง', days:[7,21,45], goal:'ลดลงอย่างน้อย 30% ในรอบถัดไป', c:'#d9822b' }, low:{ t:'ต่ำ', days:[14,30,60], goal:'ไม่เพิ่มขึ้นในรอบถัดไป', c:'#6e93d6' } };
+const AP_PHASE = [ ['เร่งด่วน','#b8334a'], ['แก้ไขหลัก','#d4a72c'], ['ติดตามผล','#1d57b8'] ];
+const AP_STATUS = { plan:'วางแผน', doing:'กำลังทำ', done:'เสร็จ' };
+
+function apLib(code){
+  const o = (SETTINGS.actionLib || {})[code], d = AP_LIB_DEFAULT[code] || AP_LIB_DEFAULT[code && code.startsWith('02') ? 'S-NONE' : 'C-NONE'];
+  return { team: (o && o.team) || d.team, actions: (o && Array.isArray(o.actions) && o.actions.length) ? o.actions : d.actions };
+}
+function apReasonOf(r){
+  const fl = recordKpiFlags(r);
+  if(!fl.inBase){ const t = cxNorm(r.cancelSubRaw || ''); const m = t.match(/^(\d{5,7})\s*(.*)$/); return m ? { code:m[1], label:m[1] + ' ' + m[2], kind:'company' } : { code:'C-NONE', label:'Nim Express (ไม่ระบุสาเหตุย่อย)', kind:'company' }; }
+  if(fl.failBucket === 'staff'){ const t = cxNorm(r.failSubRaw || r.failMainRaw || ''); const m = t.match(/^(\d{5,7})\s*(.*)$/); return m && m[1] !== '02000' ? { code:m[1], label:m[1] + ' ' + m[2], kind:'staff' } : { code:'S-NONE', label:'พนักงาน (ไม่ระบุสาเหตุย่อย)', kind:'staff' }; }
+  return null;
+}
+function apPeriodKey(f){ return perIsActive(f) ? `${PER.kind}:${PER.start}` : `custom:${f.start||''}_${f.end||''}`; }
+function apPrevKey(f){ if(!perIsActive(f)){ const pr = prevPeriodRange(f.start, f.end); return pr ? `custom:${pr.start}_${pr.end}` : null; } return `${PER.kind}:${PER.prevStart}`; }
+function apGroup(list){ const g = new Map(); list.forEach(r=>{ const x = apReasonOf(r); if(!x) return; const o = g.get(x.code) || g.set(x.code, { ...x, rows:[] }).get(x.code); o.rows.push(r); }); return g; }
+function apData(f){
+  const cur = filterRecords(f), A = analyze(cur), pr = prevRangeFor(f);
+  const prevList = pr ? filterRecords({ ...f, start:pr.start, end:pr.end }) : [], P = prevList.length ? analyze(prevList) : null;
+  const g = apGroup(cur), gp = apGroup(prevList), plans = SETTINGS.plans || {}, pk = apPeriodKey(f), ppk = apPrevKey(f);
+  const startDef = pAdd(f.end || dataMaxDate(), 1);
+  let probs = [...g.values()].map(o=>{
+    const n = o.rows.length, prevN = gp.has(o.code) ? gp.get(o.code).rows.length : (P ? 0 : null);
+    const impact = o.kind==='company' ? (A.total ? n/A.total*100 : 0) : (A.baseCount ? n/A.baseCount*100 : 0);
+    const dcs = new Map(); o.rows.forEach(r=> dcs.set(r.dcCode, (dcs.get(r.dcCode)||0) + 1));
+    const topDcs = [...dcs.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3).map(([code,c])=>{ const r0 = o.rows.find(r=>r.dcCode===code); return { name:r0.dcName, zone:r0.zone, n:c, share:c/n*100 }; });
+    const sev = (n >= 100 || impact >= 0.5) ? 'high' : (n >= 20 || impact >= 0.1) ? 'mid' : 'low';
+    const lib = apLib(o.code), leaders = topDcs.filter(d=> d.share >= 20).slice(0,2).map(d=> d.name);
+    const ownerAuto = lib.team + (leaders.length ? ' + DC Leader ' + leaders.join(', ') : '');
+    const plan = plans[pk + '|' + o.code] || {}, prevPlan = ppk ? plans[ppk + '|' + o.code] : null;
+    const start = plan.start || startDef, d = AP_SEV[sev].days;
+    const phases = [[start, pAdd(start, d[0]-1)], [pAdd(start, d[0]), pAdd(start, d[1]-1)], [pAdd(start, d[1]), pAdd(start, d[2]-1)]];
+    return { code:o.code, label:o.label, kind:o.kind, n, prevN, impact, kpi: o.kind==='company' ? 'KPI1' : 'KPI2/KPI3', topDcs, sev, lib, ownerAuto,
+      owner: plan.owner || ownerAuto, status: plan.status || 'plan', note: plan.note || '', start, phases, goal:AP_SEV[sev].goal, prevPlan, key: pk + '|' + o.code };
+  }).filter(p=> p.n >= AP_MIN).sort((a,b)=> b.n - a.n);
+  const totalCompany = [...g.values()].reduce((s,o)=> s + o.rows.length, 0), prevCompany = P ? [...gp.values()].reduce((s,o)=> s + o.rows.length, 0) : null;
+  return { A, P, probs: probs.slice(0, AP_MAX), hidden: Math.max(0, probs.length - AP_MAX), totalCompany, prevCompany, pk };
+}
+const apDate = s => { const d = pDate(s); return `${d.getDate()} ${TH_MON[d.getMonth()]}`; };
+const apRange = ([a,b]) => `${apDate(a)} – ${apDate(b)}`;
+
+/* ---------------- page panel (on "วิเคราะห์สาเหตุ & Action Plan") ---------------- */
+function renderActionPlan(f){
+  let box = document.getElementById('apPanel');
+  if(!box){
+    box = document.createElement('div'); box.className = 'panel'; box.id = 'apPanel'; box.style.marginBottom = '14px';
+    const anchor = document.getElementById('failKpiGrid');
+    (anchor ? anchor : document.getElementById('analysisArea').firstElementChild).after(box);
+    const old = document.getElementById('actionPlanText'); if(old && old.closest('.panel')) old.closest('.panel').style.display = 'none';
+  }
+  const D = apData(f), pl = xPeriodLabels(), A = D.A, P = D.P, admin = !!isUnlocked;
+  const dl = (a,b,low)=> b===null||b===undefined ? '<span class="ap-muted">ไม่มีช่วงก่อนหน้า</span>' : (()=>{ const d = a-b; if(Math.abs(d) < 0.05) return '<span class="ap-muted">▬ เท่าเดิม</span>'; const good = low ? d<0 : d>0; return `<span class="${good?'ap-good':'ap-bad'}">${d>0?'▲':'▼'} ${Number.isInteger(d)?fmtNum(Math.abs(d)):Math.abs(d).toFixed(1)+'pt'}</span>`; })();
+  const KN = { kpi1:'KPI1 เข้ารับได้ทั้งหมด', kpi2:'KPI2 ตรงวันนัด', kpi3:'KPI3 เข้ารับสำเร็จ' };
+  const kpiChip = k => `<div class="ap-k"><span>${KN[k]}</span><b style="color:${gradeColor(A[k], TARGETS[k])}">${fmtPct(A[k])}</b><em class="ap-g g-${xGrade(A[k],TARGETS[k])}">${xGrade(A[k],TARGETS[k])}</em><small>${dl(A[k], P?P[k]:null)}</small></div>`;
+  let h = `<div class="panel-head"><div><div class="panel-title">Action Plan</div><div class="panel-note">${xe(pl.cur)} · ${xe(xScopeLabel())} · ปัญหาจากการเข้ารับไม่ได้ด้วยสาเหตุฝั่งบริษัท</div></div>
+    ${admin ? '<div><button class="btn btn-sm" id="apSave">💾 บันทึกแผน</button></div>' : ''}</div>
+    <h3 class="ap-h">1. ผล</h3><div class="ap-kpis">${['kpi1','kpi2','kpi3'].map(kpiChip).join('')}
+      <div class="ap-k"><span>เข้ารับไม่ได้ สาเหตุบริษัท</span><b class="ap-bad">${fmtNum(D.totalCompany)} บิล</b><em class="ap-g">${A.total?fmtPct(D.totalCompany/A.total*100):'–'}</em><small>${dl(D.totalCompany, D.prevCompany, true)}</small></div></div>`;
+  if(!D.probs.length){
+    h += `<h3 class="ap-h">2. ปัญหา</h3><p class="ap-ok">✓ ไม่พบปัญหาจากสาเหตุฝั่งบริษัทที่มีตั้งแต่ ${AP_MIN} บิลขึ้นไปในช่วงนี้</p>`;
+  } else {
+    h += `<h3 class="ap-h">2–4. ปัญหา · แนวทางแก้ไข · ไทม์ไลน์</h3><div class="ap-list">` + D.probs.map((p,i)=>`
+      <div class="ap-item" data-key="${xe(p.key)}">
+        <div class="ap-top"><span class="ap-no">${i+1}</span><span class="ap-sev" style="background:${AP_SEV[p.sev].c}">ความรุนแรง${AP_SEV[p.sev].t}</span>
+          <b class="ap-title">${xe(p.label)}</b><span class="ap-tag">${p.kind==='company'?'ยกเลิกโดยบริษัท':'เข้ารับไม่สำเร็จ: พนักงาน'}</span></div>
+        <div class="ap-grid">
+          <div><h4>ปัญหา</h4><p><b>${fmtNum(p.n)} บิล</b> ${dl(p.n, p.prevN, true)} · ทำให้ ${p.kpi} ลดลง <b>${p.impact.toFixed(2)}pt</b></p>
+            <p class="ap-muted">${p.topDcs.map(d=>`${xe(d.name)} (${xe(d.zone)}) ${fmtNum(d.n)} บิล · ${d.share.toFixed(0)}%`).join('<br>')}</p>
+            ${p.prevPlan ? `<p class="ap-muted">แผนรอบก่อน: ${AP_STATUS[p.prevPlan.status]||'วางแผน'} · ผล ${dl(p.n, p.prevN, true)}</p>` : ''}</div>
+          <div><h4>แนวทางแก้ไข</h4><ol>${p.lib.actions.map(a=>`<li>${xe(a)}</li>`).join('')}</ol><p class="ap-muted">เป้าหมาย: ${xe(p.goal)}</p></div>
+          <div><h4>ไทม์ไลน์</h4>${p.phases.map((ph,j)=>`<div class="ap-ph"><i style="background:${AP_PHASE[j][1]}"></i>${AP_PHASE[j][0]} <b>${apRange(ph)}</b></div>`).join('')}
+            ${admin ? `<label class="ap-f">เริ่ม <input type="date" data-f="start" value="${p.start}"></label>` : ''}</div>
+          <div><h4>ผู้รับผิดชอบ · สถานะ</h4>
+            ${admin ? `<input type="text" data-f="owner" value="${xe(p.owner)}" class="ap-in" aria-label="ผู้รับผิดชอบ">
+              <select data-f="status" class="ap-in" aria-label="สถานะ">${Object.entries(AP_STATUS).map(([k,t])=>`<option value="${k}"${p.status===k?' selected':''}>${t}</option>`).join('')}</select>
+              <input type="text" data-f="note" value="${xe(p.note)}" class="ap-in" placeholder="หมายเหตุ" aria-label="หมายเหตุ">`
+            : `<p>${xe(p.owner)}</p><p><span class="ap-st st-${p.status}">${AP_STATUS[p.status]}</span></p>${p.note?`<p class="ap-muted">${xe(p.note)}</p>`:''}`}</div>
+        </div></div>`).join('') + `</div>` + (D.hidden ? `<p class="ap-muted">และอีก ${D.hidden} ปัญหาที่มีจำนวนน้อยกว่า</p>` : '');
+  }
+  box.innerHTML = h;
+  if(admin && D.probs.length) box.querySelector('#apSave').onclick = async ()=>{
+    const plans = { ...(SETTINGS.plans || {}) };
+    box.querySelectorAll('.ap-item').forEach(it=>{ const k = it.dataset.key, v = {}; it.querySelectorAll('[data-f]').forEach(el=> v[el.dataset.f] = el.value.trim()); plans[k] = { ...(plans[k]||{}), ...v, savedAt:new Date().toISOString() }; });
+    try{ await saveSettings({ plans }); toast('บันทึกแผนแล้ว'); }catch(e){ toast('บันทึกไม่สำเร็จ: ' + e.message); }
+  };
+}
+
+/* ---------------- settings: solution library ---------------- */
+SET_SECTIONS.aplib = { t:'คลังแนวทางแก้ไข', ic:'🛠️', sum:()=> `${Object.keys(AP_LIB_DEFAULT).length} สาเหตุ` + (Object.keys(SETTINGS.actionLib||{}).length ? ` · แก้แล้ว ${Object.keys(SETTINGS.actionLib).length}` : '') };
+const __settings0 = XTABS.settings;
+XTABS.settings = function(f){
+  if(SET_VIEW !== 'aplib' || !isUnlocked) return __settings0(f);
+  const seen = new Map(); RECORDS.forEach(r=>{ const x = apReasonOf(r); if(x) seen.set(x.code, (seen.get(x.code)||{ label:x.label, n:0 })), seen.get(x.code).n++; });
+  const codes = [...new Set([...seen.keys(), ...Object.keys(AP_LIB_DEFAULT)])].sort((a,b)=> (seen.get(b)?.n||0) - (seen.get(a)?.n||0));
+  const label = c => seen.get(c)?.label || (c==='C-NONE' ? 'Nim Express (ไม่ระบุสาเหตุย่อย)' : c==='S-NONE' ? 'พนักงาน (ไม่ระบุสาเหตุย่อย)' : c);
+  document.getElementById('settingsBody').innerHTML = `<div class="set-head"><button class="btn btn-outline btn-sm" data-setv="">‹ กลับหน้าตั้งค่า</button><h2>คลังแนวทางแก้ไข</h2></div>
+    <div class="panel"><p class="panel-note" style="text-align:left">แนวทางและทีมที่รับผิดชอบของแต่ละรหัสสาเหตุ ใช้สร้าง Action Plan อัตโนมัติ · 1 บรรทัด = 1 แนวทาง · เรียงตามจำนวนบิลที่เกิดจริง</p>
+    <div class="ap-lib">${codes.map(c=>{ const L = apLib(c); return `<div class="ap-libi" data-code="${xe(c)}"><b>${xe(label(c))}</b> <small>${fmtNum(seen.get(c)?.n||0)} บิล${(SETTINGS.actionLib||{})[c]?' · แก้แล้ว':''}</small>
+      <label>ทีมรับผิดชอบ <input type="text" data-l="team" value="${xe(L.team)}"></label><label>แนวทาง <textarea data-l="actions" rows="3">${xe(L.actions.join('\n'))}</textarea></label></div>`; }).join('')}</div>
+    <div class="set-actions"><button class="btn" id="apLibSave">บันทึกคลังแนวทาง</button><button class="btn btn-outline" id="apLibReset">คืนค่าที่ร่างไว้</button></div></div>`;
+  document.getElementById('apLibSave').onclick = async ()=>{
+    const lib = {};
+    document.querySelectorAll('.ap-libi').forEach(el=>{ const c = el.dataset.code, d = AP_LIB_DEFAULT[c] || apLib(c), team = el.querySelector('[data-l="team"]').value.trim(), actions = el.querySelector('[data-l="actions"]').value.split('\n').map(s=>s.trim()).filter(Boolean);
+      const def = AP_LIB_DEFAULT[c]; if(!def || team !== def.team || actions.join('\n') !== def.actions.join('\n')) lib[c] = { team, actions }; });
+    await saveSettings({ actionLib:lib }); toast('บันทึกคลังแนวทางแล้ว');
+  };
+  document.getElementById('apLibReset').onclick = async ()=>{ await saveSettings({ actionLib:{} }); toast('คืนค่าที่ร่างไว้แล้ว'); };
+};
+
+/* ---------------- exports ---------------- */
+XSECS.splice(XSECS.findIndex(s=>s[0]==='cancel')+1, 0, ['action','Action Plan (ผล · ปัญหา · แนวทาง)'], ['actiontl','ไทม์ไลน์แก้ไขปัญหา']);
+xPicked.add('action'); xPicked.add('actiontl');
+XICON.action = '<path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2h9"/>';
+XICON.actiontl = '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M7 13h5M10 17h7"/>';
+function xWrapText(t, max){ const out = []; let line = ''; for(const w of String(t).split(/(?<=\s)/)){ if((line + w).length > max && line){ out.push(line.trim()); line = w; } else line += w; } if(line.trim()) out.push(line.trim()); return out; }
+const __xPieceAP = xPiece;
+xPiece = function(k, w, o={}){
+  if(k === 'action'){
+    const D = apData(getFilters()), A = D.A, P = D.P;
+    let s = '', y = 0;
+    // 1. results strip
+    const items = [['kpi1','KPI1'],['kpi2','KPI2'],['kpi3','KPI3']].map(([kk,l])=>({ l, v:fmtPct(A[kk]), g:xGrade(A[kk],TARGETS[kk]), d: P ? A[kk]-P[kk] : null, pct:true }));
+    items.push({ l:'เข้ารับไม่ได้ สาเหตุบริษัท', v:fmtNum(D.totalCompany)+' บิล', d: D.prevCompany===null ? null : D.totalCompany - D.prevCompany, low:true });
+    const cw = (w - 3*12)/4;
+    items.forEach((it,i)=>{ const x = i*(cw+12); s += `<g transform="translate(${x} 0)"><rect width="${cw}" height="74" rx="12" fill="#f2f5fb" stroke="#dbe3f0"/><text x="14" y="26" font-size="15" fill="${XL.muted}">${xe(it.l)}</text><text x="14" y="58" font-size="26" font-weight="600" fill="${XL.ink}">${xe(it.v)}</text>${it.g?`<rect x="${cw-52}" y="14" width="38" height="26" rx="7" fill="${GRADE_COL[it.g]}"/><text x="${cw-33}" y="33" text-anchor="middle" font-size="16" font-weight="600" fill="#fff">${it.g}</text>`:''}<text x="${cw-14}" y="60" text-anchor="end" font-size="15" font-weight="600" fill="${xDeltaCol(it.d, !!it.low)}">${xe(xDeltaTxt(it.d, !!it.pct))}</text></g>`; });
+    y = 92;
+    if(!D.probs.length){ s += `<text x="${w/2}" y="${y+30}" text-anchor="middle" font-size="18" fill="${XG.good}">✓ ไม่พบปัญหาจากสาเหตุฝั่งบริษัทในช่วงนี้</text>`; return { t:'Action Plan · 1. ผล', s, h: o.h || y+50 }; }
+    // 2–4 table: problem | impact | solutions | owner | due | status
+    const colW = [0.29, 0.13, 0.34, 0.16, 0.08].map(f=> f*w), X = []; colW.forEach((c,i)=> X.push(i ? X[i-1] + colW[i-1] : 0));
+    const heads = ['2. ปัญหา', 'ผลกระทบ', '3. แนวทางแก้ไข', 'ผู้รับผิดชอบ', 'สถานะ'];
+    s += `<rect y="${y}" width="${w}" height="34" rx="7" fill="#0a2a5e"/>` + heads.map((t,i)=>`<text x="${X[i]+10}" y="${y+23}" font-size="15" font-weight="600" fill="#fff">${t}</text>`).join(''); y += 34;
+    const fs = 14, lh = 19;
+    D.probs.forEach((p,i)=>{
+      const pl = [`${i+1}. ${p.label}`, ...p.topDcs.slice(0,2).map(d=>`${d.name} ${fmtNum(d.n)} บิล (${d.share.toFixed(0)}%)`)];
+      const sl = p.lib.actions.slice(0,2).flatMap((a,j)=> xWrapText((j+1)+'. '+a, Math.floor(colW[2]/8.2)));
+      const ol = xWrapText(p.owner, Math.floor(colW[3]/8.2));
+      const lines = Math.max(pl.length, sl.length, ol.length, 3), rh = lines*lh + 16;
+      if(i%2) s += `<rect y="${y}" width="${w}" height="${rh}" fill="#f6f8fc"/>`;
+      s += `<rect x="0" y="${y+8}" width="5" height="${rh-16}" rx="2" fill="${AP_SEV[p.sev].c}"/>`;
+      pl.forEach((t,j)=> s += `<text x="${X[0]+12}" y="${y+22+j*lh}" font-size="${j?13:fs}" font-weight="${j?400:600}" fill="${j?XL.muted:XL.ink}">${xe(t)}</text>`);
+      s += `<text x="${X[1]+10}" y="${y+22}" font-size="${fs}" font-weight="600" fill="${XG.bad}">${fmtNum(p.n)} บิล</text><text x="${X[1]+10}" y="${y+22+lh}" font-size="13" fill="${XL.muted}">${p.kpi} −${p.impact.toFixed(2)}pt</text><text x="${X[1]+10}" y="${y+22+2*lh}" font-size="13" fill="${xDeltaCol(p.prevN===null?null:p.n-p.prevN, true)}">${xe(xDeltaTxt(p.prevN===null?null:p.n-p.prevN, false))}</text>`;
+      sl.forEach((t,j)=> s += `<text x="${X[2]+10}" y="${y+22+j*lh}" font-size="13" fill="${XL.ink}">${xe(t)}</text>`);
+      ol.forEach((t,j)=> s += `<text x="${X[3]+10}" y="${y+22+j*lh}" font-size="13" fill="${XL.ink}">${xe(t)}</text>`);
+      s += `<text x="${X[4]+10}" y="${y+22}" font-size="13" font-weight="600" fill="${p.status==='done'?XG.good:p.status==='doing'?'#d4a72c':XL.muted}">${AP_STATUS[p.status]}</text><text x="${X[4]+10}" y="${y+22+lh}" font-size="12" fill="${XL.muted}">${AP_SEV[p.sev].t}</text>`;
+      y += rh;
+    });
+    return { t:'Action Plan · ผล · ปัญหา · แนวทางแก้ไข (สาเหตุฝั่งบริษัท)', s, h: o.h ? Math.max(o.h, y) : y };
+  }
+  if(k === 'actiontl'){
+    const D = apData(getFilters());
+    if(!D.probs.length) return { t:'4. ไทม์ไลน์แก้ไขปัญหา', s:`<text x="${w/2}" y="40" text-anchor="middle" font-size="18" fill="${XG.good}">✓ ไม่มีปัญหาที่ต้องวางไทม์ไลน์</text>`, h: o.h || 60 };
+    const lw = Math.min(380, w*.34), x0 = lw + 10, iw = w - x0 - 90, t0 = D.probs.reduce((m,p)=> p.phases[0][0] < m ? p.phases[0][0] : m, '9999'), t1 = D.probs.reduce((m,p)=> p.phases[2][1] > m ? p.phases[2][1] : m, '0000');
+    const days = Math.max(1, (pDate(t1) - pDate(t0))/864e5 + 1), X = s0 => x0 + iw * ((pDate(s0) - pDate(t0))/864e5) / days;
+    const rh = o.h ? Math.min(64, Math.max(40, (o.h - 70) / D.probs.length)) : 46;
+    let s = `<g>${AP_PHASE.map((ph,i)=>`<rect x="${x0 + i*150}" y="0" width="16" height="14" rx="3" fill="${ph[1]}"/><text x="${x0 + i*150 + 22}" y="12" font-size="14" fill="${XL.ink}">${ph[0]}</text>`).join('')}</g>`;
+    // week grid
+    for(let d = 0; d <= days; d += 7){ const xd = pAdd(t0, d), x = X(xd); s += `<line x1="${x}" x2="${x}" y1="28" y2="${32 + rh*D.probs.length}" stroke="${XL.line}"/><text x="${x}" y="${48 + rh*D.probs.length}" text-anchor="middle" font-size="12" fill="${XL.muted}">${apDate(xd)}</text>`; }
+    D.probs.forEach((p,i)=>{ const y = 32 + i*rh;
+      s += `<text x="0" y="${y+rh/2-2}" font-size="14" font-weight="600" fill="${XL.ink}">${xe((i+1)+'. '+(p.label.length>36?p.label.slice(0,35)+'…':p.label))}</text><text x="0" y="${y+rh/2+15}" font-size="12" fill="${XL.muted}">${xe(p.owner.length>48?p.owner.slice(0,47)+'…':p.owner)}</text>`;
+      p.phases.forEach((ph,j)=>{ const a = X(ph[0]), b = X(pAdd(ph[1],1)); s += `<rect x="${a}" y="${y+rh/2-11}" width="${Math.max(3,b-a-2)}" height="22" rx="5" fill="${AP_PHASE[j][1]}"/>`; if(b-a > 70) s += `<text x="${(a+b)/2}" y="${y+rh/2+5}" text-anchor="middle" font-size="12" fill="#fff">${apDate(ph[0])}–${apDate(ph[1])}</text>`; });
+      s += `<text x="${w}" y="${y+rh/2+5}" text-anchor="end" font-size="13" font-weight="600" fill="${p.status==='done'?XG.good:p.status==='doing'?'#d4a72c':XL.muted}">${AP_STATUS[p.status]}</text>`; });
+    return { t:'4. ไทม์ไลน์แก้ไขปัญหา (เร่งด่วน → แก้ไขหลัก → ติดตามผล)', s, h: o.h ? Math.max(o.h, 60 + rh*D.probs.length) : 60 + rh*D.probs.length };
+  }
+  return __xPieceAP(k, w, o);
+};
+const __xSheetsAP = xSheets;
+xSheets = function(){
+  const out = __xSheetsAP();
+  if(xPicked.has('action') || xPicked.has('actiontl')){
+    const D = apData(getFilters()), A = D.A;
+    out.push(['Action Plan', [['1. ผล'], ['KPI1 (%)', +(+A.kpi1||0).toFixed(2), 'เกรด', xGrade(A.kpi1,TARGETS.kpi1)], ['KPI2 (%)', +(+A.kpi2||0).toFixed(2), 'เกรด', xGrade(A.kpi2,TARGETS.kpi2)], ['KPI3 (%)', +(+A.kpi3||0).toFixed(2), 'เกรด', xGrade(A.kpi3,TARGETS.kpi3)], ['เข้ารับไม่ได้ สาเหตุบริษัท (บิล)', D.totalCompany, 'ช่วงก่อน', D.prevCompany===null?'ไม่มีช่วงก่อนหน้า':D.prevCompany], [],
+      ['ลำดับ','2. ปัญหา (รหัสสาเหตุ)','ประเภท','บิล','ช่วงก่อน','ผลกระทบ (pt)','KPI ที่กระทบ','DC หลัก','ความรุนแรง','3. แนวทางแก้ไข','เป้าหมาย','ผู้รับผิดชอบ','4. เร่งด่วน','แก้ไขหลัก','ติดตามผล','สถานะ','หมายเหตุ'],
+      ...D.probs.map((p,i)=>[i+1, p.label, p.kind==='company'?'ยกเลิกโดยบริษัท':'พนักงาน', p.n, p.prevN===null?'ไม่มีช่วงก่อนหน้า':p.prevN, +p.impact.toFixed(2), p.kpi, p.topDcs.map(d=>`${d.name} ${d.n} (${d.share.toFixed(0)}%)`).join(', '), AP_SEV[p.sev].t, p.lib.actions.map((a,j)=>`${j+1}. ${a}`).join('\n'), p.goal, p.owner, ...p.phases.map(ph=>`${ph[0]} ถึง ${ph[1]}`), AP_STATUS[p.status], p.note])]]);
+  }
+  return out;
+};
+const __xSummaryAP = xSummaryText;
+xSummaryText = function(){
+  const L = [__xSummaryAP()];
+  if(xPicked.has('action') || xPicked.has('actiontl')){
+    const D = apData(getFilters());
+    L.push('', '🛠️ Action Plan (สาเหตุฝั่งบริษัท)', `📌 ผล: เข้ารับไม่ได้ สาเหตุบริษัท ${fmtNum(D.totalCompany)} บิล` + (D.prevCompany===null ? ' (ไม่มีช่วงก่อนหน้า)' : ` (ช่วงก่อน ${fmtNum(D.prevCompany)})`));
+    if(!D.probs.length) L.push('✅ ไม่พบปัญหาจากสาเหตุฝั่งบริษัท');
+    D.probs.slice(0,5).forEach((p,i)=>{ L.push(`${MD[i]} ${p.label}: ${fmtNum(p.n)} บิล · ${p.kpi} −${p.impact.toFixed(2)}pt` + (p.topDcs[0] ? ` · มากสุด ${p.topDcs[0].name} ${p.topDcs[0].share.toFixed(0)}%` : ''));
+      L.push(`   🔧 ${p.lib.actions[0]}`); L.push(`   👤 ${p.owner} · ⏱️ เร่งด่วน ${apRange(p.phases[0])} · ติดตามผล ${apRange(p.phases[2])} · ${AP_STATUS[p.status]}`); });
+  }
+  return L.join('\n');
+};
+const __renderAllAP = renderAll;
+renderAll = function(){ __renderAllAP(); if(currentTab === 'analysis' && RECORDS.length){ try{ renderActionPlan(getFilters()); }catch(e){ console.error(e); } } };
 
 
 /* ============================== INIT ============================== */
