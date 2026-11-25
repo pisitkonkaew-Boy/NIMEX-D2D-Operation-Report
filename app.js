@@ -3480,22 +3480,27 @@ function xCompose(keys, LOGO){
    content stretched so margins stay equal */
 function xInfoMeasure(keys, W){
   const m = 28, g = 28, head = 176, foot = 46, ch = XCARD.top + XCARD.pad, inner = W-2*m, hw = (inner-g)/2;
-  const fullK = keys.filter(k=> k==='kpi' || k==='trend'), halfK = keys.filter(k=> !fullK.includes(k));
+  const XA4_TAIL = ['action','actiontl'];   // wide tables: always full width, after the two columns, never stretched
+  const tailK = keys.filter(k=> XA4_TAIL.includes(k));
+  const fullK = keys.filter(k=> k==='kpi' || k==='trend'), halfK = keys.filter(k=> !fullK.includes(k) && !tailK.includes(k));
   if(halfK.length === 1){ fullK.push(halfK[0]); halfK.length = 0; }
   const Fb = fullK.map(k=>({ k, nh:xPiece(k, inner-2*XCARD.pad).h })), C = [[],[]], cH = [0,0];
+  const Tb = tailK.map(k=>({ k, nh:xPiece(k, inner-2*XCARD.pad).h }));
   halfK.forEach(k=>{ const nh = xPiece(k, hw-2*XCARD.pad).h, c = cH[0] <= cH[1] ? 0 : 1; C[c].push({ k, nh }); cH[c] += nh + ch + (C[c].length>1 ? g : 0); });
-  const colH = Math.max(...cH), blocks = Fb.length + (colH ? 1 : 0), used = head + foot + g*(blocks+1) + Fb.reduce((s,f)=>s+f.nh+ch,0) + colH;
-  return { W, m, g, head, foot, ch, inner, hw, Fb, C, cH, colH, used };
+  const colH = Math.max(...cH), blocks = Fb.length + Tb.length + (colH ? 1 : 0), used = head + foot + g*(blocks+1) + Fb.reduce((s,f)=>s+f.nh+ch,0) + Tb.reduce((s,f)=>s+f.nh+ch,0) + colH;
+  return { W, m, g, head, foot, ch, inner, hw, Fb, Tb, C, cH, colH, used };
 }
 function xInfographic(keys, LOGO){
   const ratio = 3508/2480; let lo = 1080, hi = 2200, best = xInfoMeasure(keys, lo);
   if(best.used > lo*ratio){ for(let i=0;i<8;i++){ const mid = (lo+hi)/2, T = xInfoMeasure(keys, mid); if(T.used <= mid*ratio){ hi = mid; best = T; } else lo = mid; } if(best.used > best.W*ratio) best = xInfoMeasure(keys, hi); }
-  const T = best, { W, m, g, head, foot, ch, inner, hw, Fb, C, colH } = T, H = Math.round(W*ratio), spare = Math.max(0, H - T.used), base = Fb.reduce((s,f)=>s+f.nh,0) + colH || 1, fct = 1 + spare/base;
+  const T = best, { W, m, g, head, foot, ch, inner, hw, Fb, Tb, C, colH } = T, H = Math.round(W*ratio), spare = Math.max(0, H - T.used), base = Fb.reduce((s,f)=>s+f.nh,0) + colH || 1, fct = 1 + spare/base;
   let y = head + g, b = '';
   Fb.forEach(x=>{ const h = x.nh*fct, p = xPiece(x.k, inner-2*XCARD.pad, { h }); b += xCard(p, x.k, m, y, inner, h+ch); y += h + ch + g; });
   const colFinal = colH*fct;
   C.forEach((c,ci)=>{ if(!c.length) return; const gaps = (c.length-1)*g, chr = c.length*ch, sum = c.reduce((s,x)=>s+x.nh,0), sc = (colFinal-gaps-chr)/sum; let yy = y;
     c.forEach(x=>{ const h = x.nh*sc, p = xPiece(x.k, hw-2*XCARD.pad, { h }); b += xCard(p, x.k, m+ci*(hw+g), yy, hw, h+ch); yy += h + ch + g; }); });
+  if(colH) y += colFinal + g;
+  Tb.forEach(x=>{ const p = xPiece(x.k, inner-2*XCARD.pad); b += xCard(p, x.k, m, y, inner, p.h+ch); y += p.h + ch + g; });
   return xWrap(W, H, xHead(W, head, 'hg', LOGO) + b + xFoot(W, H, foot));
 }
 /* one full-bleed 16:9 slide per section */
